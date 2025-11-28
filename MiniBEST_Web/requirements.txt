@@ -1,0 +1,14 @@
+fastapi
+uvicorn
+sqlalchemy
+python-jose[cryptography]
+passlib[bcrypt]
+python-multipart
+streamlit
+pandas
+numpy
+matplotlib
+opencv-python-headless
+scipy
+requests
+
