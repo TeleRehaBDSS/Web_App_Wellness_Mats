@@ -98,152 +98,197 @@ def render_minibest(patient):
         "stance_eyes_open": "Stance (Eyes Open)",
         "stance_eyes_closed": "Stance (Eyes Closed)",
         "compensatory_stepping": "Compensatory Stepping",
-        "stand_one_leg": "Stand on One Leg"
+        "stand_one_leg": "Stand on One Leg",
+        "change_gait_speed": "Change in Gait Speed",
+        "walk_head_turns_horizontal": "Walk with Head Turns - Horizontal",
+        "walk_pivot_turns": "Walk with Pivot Turns",
+        "step_over_obstacles": "Step Over Obstacles",
+        "tug_dual_task": "Timed Up & Go with Dual Task"
     }
     
-    tab_names = list(exercises.values())
-    tabs = st.tabs(tab_names)
+    # Use selectbox for exercise selection (scrollable)
+    selected_exercise = st.selectbox(
+        "Select Exercise",
+        options=list(exercises.items()),
+        format_func=lambda x: x[1],
+        key="minibest_exercise_selector"
+    )
     
-    for i, (key, label) in enumerate(exercises.items()):
-        with tabs[i]:
-            st.subheader(label)
-            uploaded_file = st.file_uploader(f"Upload CSV for {label}", type=["csv"], key=f"upl_{key}")
+    key, label = selected_exercise
+    
+    # Display selected exercise
+    uploaded_file = st.file_uploader(f"Upload CSV for {label}", type=["csv"], key=f"upl_{key}")
+    
+    # Extra inputs
+    used_hands = False
+    multiple_attempts = False
+    variant = None
+    manual_input = None
+    
+    col1, col2 = st.columns(2)
+    if key == "sit_to_stand":
+        used_hands = col1.checkbox("Used Hands?", key=f"uh_{key}")
+        multiple_attempts = col2.checkbox("Multiple Attempts?", key=f"ma_{key}")
+    elif key == "compensatory_stepping":
+        variant = col1.selectbox("Direction", ["FORWARD", "BACKWARD", "LATERAL_LEFT", "LATERAL_RIGHT"], key=f"var_{key}")
+    elif key == "stand_one_leg":
+        variant = col1.selectbox("Leg", ["Left", "Right"], key=f"var_{key}")
+    elif key == "tug_dual_task":
+        st.info("For TUG with Dual Task, upload two CSV files: one for TUG alone, one for TUG with Dual Task")
+        tug_alone_file = st.file_uploader("Upload CSV for TUG alone", type=["csv"], key=f"tug_alone_{key}")
+        tug_dual_file = uploaded_file  # Use the main uploader for dual task
+        uploaded_file = tug_alone_file  # Will handle both in backend
+
+    if uploaded_file and st.button(f"Analyze {label}", key=f"btn_{key}"):
+        files = {"file": uploaded_file}
+        data = {
+            "exercise_type": key,
+            "patient_id": patient["id"],
+            "used_hands": used_hands,
+            "multiple_attempts": multiple_attempts,
+            "variant": variant
+        }
+        
+        with st.spinner("Analyzing..."):
+            res = requests.post(f"{API_URL}/analyze/minibest", files=files, data=data, headers=get_headers())
+                
+        if res.status_code == 200:
+            result = res.json()
+            st.success(f"Score: {result['score']}")
             
-            # Extra inputs
-            used_hands = False
-            multiple_attempts = False
-            variant = None
-            
-            col1, col2 = st.columns(2)
+            # Layout handling based on exercise type
             if key == "sit_to_stand":
-                used_hands = col1.checkbox("Used Hands?", key=f"uh_{key}")
-                multiple_attempts = col2.checkbox("Multiple Attempts?", key=f"ma_{key}")
-            elif key == "compensatory_stepping":
-                variant = col1.selectbox("Direction", ["FORWARD", "BACKWARD", "LATERAL_LEFT", "LATERAL_RIGHT"], key=f"var_{key}")
-            elif key == "stand_one_leg":
-                variant = col1.selectbox("Leg", ["Left", "Right"], key=f"var_{key}")
-
-            if uploaded_file and st.button(f"Analyze {label}", key=f"btn_{key}"):
-                files = {"file": uploaded_file}
-                data = {
-                    "exercise_type": key,
-                    "patient_id": patient["id"],
-                    "used_hands": used_hands,
-                    "multiple_attempts": multiple_attempts,
-                    "variant": variant
-                }
+                st.markdown("### Analysis Dashboard")
+                row1 = st.columns(2)
+                row2 = st.columns(2)
                 
-                with st.spinner("Analyzing..."):
-                    res = requests.post(f"{API_URL}/analyze/minibest", files=files, data=data, headers=get_headers())
-                
-                if res.status_code == 200:
-                    result = res.json()
-                    st.success(f"Score: {result['score']}")
-                    
-                    # Layout handling based on exercise type
-                    if key == "sit_to_stand":
-                        st.markdown("### Analysis Dashboard")
-                        row1 = st.columns(2)
-                        row2 = st.columns(2)
-                        
-                        # 1. Video (Top Left)
-                        with row1[0]:
-                            if result.get("replay"):
-                                st.markdown("##### Video Replay")
-                                st.image(base64.b64decode(result["replay"]), width=400)
-                            else:
-                                st.info("Video not available")
-                                
-                        # 2. Force Plot (Top Right)
-                        with row1[1]:
-                            if result.get("force_plot"):
-                                st.markdown("##### Force Profile")
-                                st.image(base64.b64decode(result["force_plot"]), use_container_width=True)
-                                
-                        # 3. AP Plot (Bottom Left)
-                        with row2[0]:
-                            if result.get("ap_plot"):
-                                st.markdown("##### AP Displacement")
-                                st.image(base64.b64decode(result["ap_plot"]), use_container_width=True)
-                                
-                        # 4. Stability Plot (Bottom Right)
-                        with row2[1]:
-                            if result.get("stability_plot"):
-                                st.markdown("##### Stability Map")
-                                st.image(base64.b64decode(result["stability_plot"]), use_container_width=True)
-
-                    elif key == "rise_to_toes":
-                        st.markdown("### Analysis Dashboard")
-                        row1 = st.columns(2)
-                        row2 = st.columns(2)
-                        
-                        # 1. Video (Top Left)
-                        with row1[0]:
-                            if result.get("replay"):
-                                st.markdown("##### Video Replay")
-                                st.image(base64.b64decode(result["replay"]), width=400)
-                            else:
-                                st.info("Video not available")
-                                
-                        # 2. Area Plot (Top Right)
-                        with row1[1]:
-                            if result.get("force_plot"): # Reusing key for Contact Area
-                                st.markdown("##### Contact Area (Heel Rise)")
-                                st.image(base64.b64decode(result["force_plot"]), use_container_width=True)
-                                
-                        # 3. AP Plot (Bottom Left)
-                        with row2[0]:
-                            if result.get("ap_plot"):
-                                st.markdown("##### Anterior-Posterior Balance")
-                                st.image(base64.b64decode(result["ap_plot"]), use_container_width=True)
-                                
-                        # 4. Stability Plot (Bottom Right)
-                        with row2[1]:
-                            if result.get("stability_plot"):
-                                st.markdown("##### CoP Stability (Flat -> Toes)")
-                                st.image(base64.b64decode(result["stability_plot"]), use_container_width=True)
-                    
-                    elif key in ["stance_eyes_open", "stance_eyes_closed", "stand_one_leg"]:
-                        st.markdown("### Analysis Dashboard")
-                        row1 = st.columns(2)
-                        row2 = st.columns(2)
-                        
-                        # 1. Video (Top Left)
-                        with row1[0]:
-                            if result.get("replay"):
-                                st.markdown("##### Video Replay")
-                                st.image(base64.b64decode(result["replay"]), width=400)
-                            else:
-                                st.info("Video not available")
-                                
-                        # 2. Sway Plot (Top Right)
-                        with row1[1]:
-                            if result.get("force_plot"): # Reused for Sway Time
-                                st.markdown("##### CoP Sway Over Time")
-                                st.image(base64.b64decode(result["force_plot"]), use_container_width=True)
-                                
-                        # 3. Stabilogram (Bottom Left)
-                        with row2[0]:
-                            if result.get("ap_plot"): # Reused for Stabilogram
-                                st.markdown("##### CoP Stabilogram (X vs Y)")
-                                st.image(base64.b64decode(result["ap_plot"]), use_container_width=True)
-                                
-                        # 4. Stability Map (Bottom Right)
-                        with row2[1]:
-                            if result.get("stability_plot"):
-                                st.markdown("##### CoP Stability Map")
-                                st.image(base64.b64decode(result["stability_plot"]), use_container_width=True)
-
+                # 1. Video (Top Left)
+                with row1[0]:
+                    if result.get("replay"):
+                        st.markdown("##### Video Replay")
+                        st.image(base64.b64decode(result["replay"]), width=400)
                     else:
-                        # Fallback for other exercises
-                        if result.get("plot"):
-                            st.image(base64.b64decode(result["plot"]), caption="Analysis Plots", use_container_width=True)
-                        if result.get("replay"):
-                            st.image(base64.b64decode(result["replay"]), caption="Video Replay", width=400)
+                        st.info("Video not available")
                         
-                    st.json(result['features'])
-                else:
-                    st.error(f"Error: {res.text}")
+                # 2. Force Plot (Top Right)
+                with row1[1]:
+                    if result.get("force_plot"):
+                        st.markdown("##### Force Profile")
+                        st.image(base64.b64decode(result["force_plot"]), use_container_width=True)
+                        
+                # 3. AP Plot (Bottom Left)
+                with row2[0]:
+                    if result.get("ap_plot"):
+                        st.markdown("##### AP Displacement")
+                        st.image(base64.b64decode(result["ap_plot"]), use_container_width=True)
+                        
+                # 4. Stability Plot (Bottom Right)
+                with row2[1]:
+                    if result.get("stability_plot"):
+                        st.markdown("##### Stability Map")
+                        st.image(base64.b64decode(result["stability_plot"]), use_container_width=True)
+
+            elif key == "rise_to_toes":
+                st.markdown("### Analysis Dashboard")
+                row1 = st.columns(2)
+                row2 = st.columns(2)
+                
+                # 1. Video (Top Left)
+                with row1[0]:
+                    if result.get("replay"):
+                        st.markdown("##### Video Replay")
+                        st.image(base64.b64decode(result["replay"]), width=400)
+                    else:
+                        st.info("Video not available")
+                        
+                # 2. Area Plot (Top Right)
+                with row1[1]:
+                    if result.get("force_plot"): # Reusing key for Contact Area
+                        st.markdown("##### Contact Area (Heel Rise)")
+                        st.image(base64.b64decode(result["force_plot"]), use_container_width=True)
+                        
+                # 3. AP Plot (Bottom Left)
+                with row2[0]:
+                    if result.get("ap_plot"):
+                        st.markdown("##### Anterior-Posterior Balance")
+                        st.image(base64.b64decode(result["ap_plot"]), use_container_width=True)
+                        
+                # 4. Stability Plot (Bottom Right)
+                with row2[1]:
+                    if result.get("stability_plot"):
+                        st.markdown("##### CoP Stability (Flat -> Toes)")
+                        st.image(base64.b64decode(result["stability_plot"]), use_container_width=True)
+            
+            elif key in ["stance_eyes_open", "stance_eyes_closed", "stand_one_leg"]:
+                st.markdown("### Analysis Dashboard")
+                row1 = st.columns(2)
+                row2 = st.columns(2)
+                
+                # 1. Video (Top Left)
+                with row1[0]:
+                    if result.get("replay"):
+                        st.markdown("##### Video Replay")
+                        st.image(base64.b64decode(result["replay"]), width=400)
+                    else:
+                        st.info("Video not available")
+                        
+                # 2. Sway Plot (Top Right)
+                with row1[1]:
+                    if result.get("force_plot"): # Reused for Sway Time
+                        st.markdown("##### CoP Sway Over Time")
+                        st.image(base64.b64decode(result["force_plot"]), use_container_width=True)
+                        
+                # 3. Stabilogram (Bottom Left)
+                with row2[0]:
+                    if result.get("ap_plot"): # Reused for Stabilogram
+                        st.markdown("##### CoP Stabilogram (X vs Y)")
+                        st.image(base64.b64decode(result["ap_plot"]), use_container_width=True)
+                        
+                # 4. Stability Map (Bottom Right)
+                with row2[1]:
+                    if result.get("stability_plot"):
+                        st.markdown("##### CoP Stability Map")
+                        st.image(base64.b64decode(result["stability_plot"]), use_container_width=True)
+
+            elif key in ["change_gait_speed", "walk_head_turns_horizontal", "walk_pivot_turns", "step_over_obstacles", "tug_dual_task"]:
+                # Gait exercises - similar layout to FGA
+                st.markdown("### Analysis Dashboard")
+                
+                # Video Replay
+                if result.get("replay"):
+                    st.subheader("Gait Video Replay")
+                    st.image(base64.b64decode(result["replay"]), use_container_width=True, caption="Gait across mats over time")
+                
+                # Gait Analysis Plots
+                if result.get("stride_plot") or result.get("cadence_plot") or result.get("cop_trajectories_plot") or result.get("butterfly_cop_plot"):
+                    st.subheader("Gait Analysis Plots")
+                    
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        if result.get("stride_plot"):
+                            st.image(base64.b64decode(result["stride_plot"]), use_container_width=True, caption="Stride Length Over Time")
+                        if result.get("cadence_plot"):
+                            st.image(base64.b64decode(result["cadence_plot"]), use_container_width=True, caption="Cadence Over Time")
+                    with col2:
+                        if result.get("cop_trajectories_plot"):
+                            st.image(base64.b64decode(result["cop_trajectories_plot"]), use_container_width=True, caption="CoP Trajectories")
+                        if result.get("butterfly_cop_plot"):
+                            st.image(base64.b64decode(result["butterfly_cop_plot"]), use_container_width=True, caption="Butterfly CoP Plot")
+                
+                # Metrics
+                with st.expander("Detailed Metrics"):
+                    st.json(result.get('features', {}))
+            else:
+                # Fallback for other exercises
+                if result.get("plot"):
+                    st.image(base64.b64decode(result["plot"]), caption="Analysis Plots", use_container_width=True)
+                if result.get("replay"):
+                    st.image(base64.b64decode(result["replay"]), caption="Video Replay", width=400)
+                
+            if key not in ["change_gait_speed", "walk_head_turns_horizontal", "walk_pivot_turns", "step_over_obstacles", "tug_dual_task"]:
+                st.json(result['features'])
+        else:
+            st.error(f"Error: {res.text}")
 
 def render_fga(patient):
     st.header(f"FGA - Patient: {patient['patient_identifier']}")
@@ -261,43 +306,80 @@ def render_fga(patient):
         10: "Steps"
     }
     
-    tabs = st.tabs(list(fga_exercises.values()))
+    # Use selectbox for exercise selection (scrollable)
+    selected_exercise = st.selectbox(
+        "Select Exercise",
+        options=list(fga_exercises.items()),
+        format_func=lambda x: f"{x[0]}. {x[1]}",
+        key="fga_exercise_selector"
+    )
     
-    for i, (ex_num, label) in enumerate(fga_exercises.items()):
-        with tabs[i]:
-            st.subheader(label)
-            uploaded_file = st.file_uploader(f"Upload CSV for {label}", type=["csv"], key=f"fga_upl_{ex_num}")
-            
-            manual_input = None
-            if ex_num in [3, 4, 5, 6, 10]:
-                options = {
-                    3: ["Smoothly", "Mild difficulty", "Moderate difficulty", "Severe difficulty or unable"],
-                    4: ["Smoothly", "Mild difficulty", "Moderate difficulty", "Severe difficulty or unable"],
-                    5: ["Smooth and balanced", "Mild imbalance", "Significant imbalance or hesitation", "Unable to perform"],
-                    6: ["Smooth", "Slight hesitation", "Significant effort or imbalance", "Unable to perform"],
-                    10: ["Smooth and balanced", "Mild difficulty", "Significant imbalance", "Unable to perform"]
-                }
-                manual_input = st.selectbox("Manual Rating (Clinical Observation)", options[ex_num], key=f"man_{ex_num}")
+    ex_num, label = selected_exercise
+    
+    # Display selected exercise
+    uploaded_file = st.file_uploader(f"Upload CSV for {label}", type=["csv"], key=f"fga_upl_{ex_num}")
+    
+    manual_input = None
+    if ex_num in [3, 4, 5, 6]:
+        options = {
+            3: ["Smoothly", "Mild difficulty", "Moderate difficulty", "Severe difficulty or unable"],
+            4: ["Smoothly", "Mild difficulty", "Moderate difficulty", "Severe difficulty or unable"],
+            5: ["Smooth and balanced", "Mild imbalance", "Significant imbalance or hesitation", "Unable to perform"],
+            6: ["Smooth", "Slight hesitation", "Significant effort or imbalance", "Unable to perform"]
+        }
+        manual_input = st.selectbox("Manual Rating (Clinical Observation)", options[ex_num], key=f"man_{ex_num}")
 
-            if uploaded_file and st.button(f"Analyze {label}", key=f"fga_btn_{ex_num}"):
-                files = {"file": uploaded_file}
-                data = {
-                    "exercise_num": ex_num,
-                    "patient_id": patient["id"],
-                    "manual_input": manual_input
-                }
+    if uploaded_file and st.button(f"Analyze {label}", key=f"fga_btn_{ex_num}"):
+        files = {"file": uploaded_file}
+        data = {
+            "exercise_num": ex_num,
+            "patient_id": patient["id"],
+            "manual_input": manual_input
+        }
+        
+        with st.spinner("Analyzing..."):
+            res = requests.post(f"{API_URL}/analyze/fga", files=files, data=data, headers=get_headers())
+        
+        if res.status_code == 200:
+            result = res.json()
+            
+            # Display Score
+            col1, col2 = st.columns([1, 3])
+            with col1:
+                st.metric("FGA Score", result['score'], help="Score: 0=Severe, 1=Moderate, 2=Mild, 3=Normal")
+            with col2:
+                st.info(f"**Explanation:** {result['explanation']}")
+            
+            # Display Video Replay (for all exercises)
+            if result.get("replay"):
+                st.subheader("Gait Video Replay (Treadmill View)")
+                st.image(base64.b64decode(result["replay"]), use_container_width=True, caption="Gait across 6 mats over time")
+            
+            # Display Gait Analysis Plots (for all exercises)
+            if result.get("stride_plot") or result.get("cadence_plot") or result.get("cop_trajectories_plot") or result.get("butterfly_cop_plot"):
+                st.subheader("Gait Analysis Plots")
                 
-                with st.spinner("Analyzing..."):
-                    res = requests.post(f"{API_URL}/analyze/fga", files=files, data=data, headers=get_headers())
+                # Stride Plot
+                if result.get("stride_plot"):
+                    st.image(base64.b64decode(result["stride_plot"]), use_container_width=True, caption="Stride Length Over Time")
                 
-                if res.status_code == 200:
-                    result = res.json()
-                    st.success(f"Score: {result['score']}")
-                    st.info(f"Explanation: {result['explanation']}")
-                    with st.expander("Detailed Metrics"):
-                        st.json(result['metrics'])
-                else:
-                    st.error(f"Error: {res.text}")
+                # Cadence Plot
+                if result.get("cadence_plot"):
+                    st.image(base64.b64decode(result["cadence_plot"]), use_container_width=True, caption="Cadence Over Time")
+                
+                # CoP Trajectories Plot
+                if result.get("cop_trajectories_plot"):
+                    st.image(base64.b64decode(result["cop_trajectories_plot"]), use_container_width=True, caption="CoP Trajectories (Left vs Right Foot)")
+                
+                # Butterfly CoP Plot (for applicable exercises)
+                if result.get("butterfly_cop_plot"):
+                    st.image(base64.b64decode(result["butterfly_cop_plot"]), use_container_width=True, caption="Butterfly CoP Plot (Continuous CoP Trace)")
+            
+            # Display Metrics
+            with st.expander("Detailed Metrics"):
+                st.json(result.get('features', result.get('metrics', {})))
+        else:
+            st.error(f"Error: {res.text}")
 
 def main():
     st.set_page_config(page_title="MiniBEST & FGA Dashboard", layout="wide")

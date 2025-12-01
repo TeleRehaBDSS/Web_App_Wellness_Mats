@@ -707,3 +707,258 @@ def process_stance_eyes_closed(signals: BasicMatSignals, participant: str) -> Ex
     }
 
     return ExerciseResult(participant, "Stance feet together (eyes closed, foam)", None, "", score, features)
+
+
+# MiniBEST Gait Exercises (10-14) - Use FGA-style analysis with MiniBEST scoring (0-2)
+def process_change_gait_speed(csv_path: str, participant: str) -> ExerciseResult:
+    """
+    MiniBEST Exercise 10: Change in Gait Speed
+    
+    (2) Normal: Significantly changes walking speed without imbalance.
+    (1) Moderate: Unable to change walking speed or signs of imbalance.
+    (0) Severe: Unable to achieve significant change in walking speed AND signs of imbalance.
+    """
+    from . import fga
+    
+    signals = fga.load_fga_signals(csv_path)
+    structured_steps = signals.structured_steps
+    gait_cycles = signals.gait_cycles
+    
+    if not gait_cycles or len(gait_cycles) == 0:
+        return ExerciseResult(participant, "Change in Gait Speed", None, csv_path, 0, {})
+    
+    metrics = fga._calculate_common_metrics(signals, structured_steps)
+    
+    # Analyze speed changes by looking at cadence variation
+    cadences = []
+    for cycle in gait_cycles:
+        if 'cadence' in cycle and cycle['cadence'] is not None:
+            cadences.append(cycle['cadence'])
+    
+    speed_variation = np.std(cadences) if len(cadences) > 1 else 0
+    significant_speed_change = speed_variation > 10  # At least 10 steps/min variation
+    has_imbalance = metrics["max_deviation_cm"] > 25.4  # Significant deviation indicates imbalance
+    
+    # MiniBEST scoring (0-2)
+    if significant_speed_change and not has_imbalance:
+        score = 2
+    elif significant_speed_change or not has_imbalance:
+        score = 1
+    else:
+        score = 0
+    
+    features = {
+        "actual_walking_time_s": float(metrics["actual_walking_time"]),
+        "total_exercise_time_s": float(metrics["total_time"]),
+        "number_of_steps": int(metrics["number_of_steps"]),
+        "average_cadence_steps_per_min": float(metrics["average_cadence"]),
+        "speed_variation_steps_per_min": float(speed_variation),
+        "significant_speed_change": bool(significant_speed_change),
+        "max_deviation_cm": float(metrics["max_deviation_cm"]),
+        "has_imbalance": bool(has_imbalance),
+    }
+    
+    return ExerciseResult(participant, "Change in Gait Speed", None, csv_path, score, features)
+
+
+def process_walk_head_turns_horizontal(csv_path: str, participant: str) -> ExerciseResult:
+    """
+    MiniBEST Exercise 11: Walk with Head Turns - Horizontal
+    
+    (2) Normal: Performs head turns with no change in gait speed and good balance.
+    (1) Moderate: Performs head turns with reduction in gait speed.
+    (0) Severe: Performs head turns with imbalance.
+    """
+    from . import fga
+    
+    signals = fga.load_fga_signals(csv_path)
+    structured_steps = signals.structured_steps
+    gait_cycles = signals.gait_cycles
+    
+    if not gait_cycles or len(gait_cycles) == 0:
+        return ExerciseResult(participant, "Walk with Head Turns - Horizontal", None, csv_path, 0, {})
+    
+    metrics = fga._calculate_common_metrics(signals, structured_steps)
+    
+    # Analyze cadence variation (head turns may cause speed changes)
+    cadences = []
+    for cycle in gait_cycles:
+        if 'cadence' in cycle and cycle['cadence'] is not None:
+            cadences.append(cycle['cadence'])
+    
+    cadence_variation = np.std(cadences) if len(cadences) > 1 else 0
+    speed_reduction = cadence_variation > 15  # High variation indicates speed reduction
+    has_imbalance = metrics["max_deviation_cm"] > 25.4
+    
+    # MiniBEST scoring
+    if not speed_reduction and not has_imbalance:
+        score = 2
+    elif speed_reduction and not has_imbalance:
+        score = 1
+    else:
+        score = 0
+    
+    features = {
+        "actual_walking_time_s": float(metrics["actual_walking_time"]),
+        "total_exercise_time_s": float(metrics["total_time"]),
+        "number_of_steps": int(metrics["number_of_steps"]),
+        "average_cadence_steps_per_min": float(metrics["average_cadence"]),
+        "cadence_variation_steps_per_min": float(cadence_variation),
+        "speed_reduction": bool(speed_reduction),
+        "max_deviation_cm": float(metrics["max_deviation_cm"]),
+        "has_imbalance": bool(has_imbalance),
+    }
+    
+    return ExerciseResult(participant, "Walk with Head Turns - Horizontal", None, csv_path, score, features)
+
+
+def process_walk_pivot_turns(csv_path: str, participant: str) -> ExerciseResult:
+    """
+    MiniBEST Exercise 12: Walk with Pivot Turns
+    
+    (2) Normal: Turns with feet close FAST (< 3 steps) with good balance.
+    (1) Moderate: Turns with feet close SLOW (>4 steps) with good balance.
+    (0) Severe: Cannot turn with feet close at any speed without imbalance.
+    """
+    from . import fga
+    
+    signals = fga.load_fga_signals(csv_path)
+    structured_steps = signals.structured_steps
+    gait_cycles = signals.gait_cycles
+    
+    if not gait_cycles or len(gait_cycles) == 0:
+        return ExerciseResult(participant, "Walk with Pivot Turns", None, csv_path, 0, {})
+    
+    metrics = fga._calculate_common_metrics(signals, structured_steps)
+    number_of_steps = metrics["number_of_steps"]
+    turn_time = metrics["actual_walking_time"]
+    has_imbalance = metrics["max_deviation_cm"] > 25.4
+    
+    # Estimate steps for turn (assuming turn is part of the exercise)
+    # If turn_time < 3s and steps < 4, it's fast
+    fast_turn = turn_time < 3.0 and number_of_steps < 4
+    slow_turn = turn_time >= 3.0 and number_of_steps >= 4
+    
+    # MiniBEST scoring
+    if fast_turn and not has_imbalance:
+        score = 2
+    elif slow_turn and not has_imbalance:
+        score = 1
+    else:
+        score = 0
+    
+    features = {
+        "turn_time_s": float(turn_time),
+        "number_of_steps": int(number_of_steps),
+        "total_exercise_time_s": float(metrics["total_time"]),
+        "max_deviation_cm": float(metrics["max_deviation_cm"]),
+        "has_imbalance": bool(has_imbalance),
+        "fast_turn": bool(fast_turn),
+    }
+    
+    return ExerciseResult(participant, "Walk with Pivot Turns", None, csv_path, score, features)
+
+
+def process_step_over_obstacles(csv_path: str, participant: str) -> ExerciseResult:
+    """
+    MiniBEST Exercise 13: Step Over Obstacles
+    
+    (2) Normal: Able to step over box with minimal change of gait speed and with good balance.
+    (1) Moderate: Steps over box but touches box OR displays cautious behavior by slowing gait.
+    (0) Severe: Unable to step over box OR steps around box.
+    """
+    from . import fga
+    
+    signals = fga.load_fga_signals(csv_path)
+    structured_steps = signals.structured_steps
+    gait_cycles = signals.gait_cycles
+    
+    if not gait_cycles or len(gait_cycles) == 0:
+        return ExerciseResult(participant, "Step Over Obstacles", None, csv_path, 0, {})
+    
+    metrics = fga._calculate_common_metrics(signals, structured_steps)
+    
+    # Analyze cadence variation (obstacle may cause speed changes)
+    cadences = []
+    for cycle in gait_cycles:
+        if 'cadence' in cycle and cycle['cadence'] is not None:
+            cadences.append(cycle['cadence'])
+    
+    cadence_variation = np.std(cadences) if len(cadences) > 1 else 0
+    speed_maintained = cadence_variation < 10  # Low variation = speed maintained
+    has_imbalance = metrics["max_deviation_cm"] > 25.4
+    
+    # MiniBEST scoring
+    if speed_maintained and not has_imbalance:
+        score = 2
+    elif not speed_maintained or has_imbalance:
+        score = 1  # Could be touching box or slowing down
+    else:
+        score = 0  # Unable to step over
+    
+    features = {
+        "actual_walking_time_s": float(metrics["actual_walking_time"]),
+        "total_exercise_time_s": float(metrics["total_time"]),
+        "number_of_steps": int(metrics["number_of_steps"]),
+        "average_cadence_steps_per_min": float(metrics["average_cadence"]),
+        "cadence_variation_steps_per_min": float(cadence_variation),
+        "speed_maintained": bool(speed_maintained),
+        "max_deviation_cm": float(metrics["max_deviation_cm"]),
+        "has_imbalance": bool(has_imbalance),
+    }
+    
+    return ExerciseResult(participant, "Step Over Obstacles", None, csv_path, score, features)
+
+
+def process_tug_dual_task(csv_path_tug: str, csv_path_dual: str, participant: str) -> ExerciseResult:
+    """
+    MiniBEST Exercise 14: Timed Up & Go with Dual Task
+    
+    (2) Normal: No noticeable change in sitting, standing or walking while backward counting 
+        when compared to TUG without Dual Task.
+    (1) Moderate: Dual Task affects either counting OR walking (>10%) when compared to the TUG without Dual Task.
+    (0) Severe: Stops counting while walking OR stops walking while counting.
+    """
+    from . import fga
+    
+    # Process both TUG alone and TUG with dual task
+    signals_tug = fga.load_fga_signals(csv_path_tug)
+    signals_dual = fga.load_fga_signals(csv_path_dual)
+    
+    metrics_tug = fga._calculate_common_metrics(signals_tug, signals_tug.structured_steps)
+    metrics_dual = fga._calculate_common_metrics(signals_dual, signals_dual.structured_steps)
+    
+    tug_time = metrics_tug["actual_walking_time"]
+    dual_time = metrics_dual["actual_walking_time"]
+    
+    # Calculate percentage change
+    if tug_time > 0:
+        time_change_percent = ((dual_time - tug_time) / tug_time) * 100
+    else:
+        time_change_percent = 0
+    
+    # Check if walking was maintained (both completed)
+    tug_completed = metrics_tug["estimated_distance_m"] >= 2.5  # ~3 meters
+    dual_completed = metrics_dual["estimated_distance_m"] >= 2.5
+    
+    # MiniBEST scoring
+    if tug_completed and dual_completed and abs(time_change_percent) < 10:
+        score = 2  # No noticeable change
+    elif tug_completed and dual_completed and abs(time_change_percent) >= 10:
+        score = 1  # Dual task affects walking (>10%)
+    else:
+        score = 0  # Stops walking or counting
+    
+    features = {
+        "tug_time_s": float(tug_time),
+        "dual_task_time_s": float(dual_time),
+        "time_change_percent": float(time_change_percent),
+        "tug_completed": bool(tug_completed),
+        "dual_task_completed": bool(dual_completed),
+        "tug_distance_m": float(metrics_tug["estimated_distance_m"]),
+        "dual_task_distance_m": float(metrics_dual["estimated_distance_m"]),
+        "tug_steps": int(metrics_tug["number_of_steps"]),
+        "dual_task_steps": int(metrics_dual["number_of_steps"]),
+    }
+    
+    return ExerciseResult(participant, "Timed Up & Go with Dual Task", None, csv_path_dual, score, features)

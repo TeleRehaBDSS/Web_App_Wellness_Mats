@@ -121,42 +121,73 @@ async def analyze_minibest(
         
     # Run Analysis
     try:
-        signals = minibest.load_basic_signals(file_path)
         result = None
         
-        if exercise_type == "sit_to_stand":
-            result = minibest.process_sit_to_stand(signals, patient.patient_identifier, used_hands, multiple_attempts)
-        elif exercise_type == "rise_to_toes":
-            result = minibest.process_rise_to_toes(signals, patient.patient_identifier)
-        elif exercise_type == "stance_eyes_open":
-            result = minibest.process_stance_eyes_open(signals, patient.patient_identifier)
-        elif exercise_type == "stance_eyes_closed":
-            result = minibest.process_stance_eyes_closed(signals, patient.patient_identifier)
-        elif exercise_type == "compensatory_stepping":
-            result = minibest.process_compensatory_stepping(signals, variant or "FORWARD", patient.patient_identifier)
-        elif exercise_type == "stand_one_leg":
-            result = minibest.process_stand_on_one_leg(signals, patient.patient_identifier, variant or "Left")
+        # Gait exercises (10-14) use FGA-style analysis (6 mats)
+        if exercise_type == "change_gait_speed":
+            result = minibest.process_change_gait_speed(file_path, patient.patient_identifier)
+        elif exercise_type == "walk_head_turns_horizontal":
+            result = minibest.process_walk_head_turns_horizontal(file_path, patient.patient_identifier)
+        elif exercise_type == "walk_pivot_turns":
+            result = minibest.process_walk_pivot_turns(file_path, patient.patient_identifier)
+        elif exercise_type == "step_over_obstacles":
+            result = minibest.process_step_over_obstacles(file_path, patient.patient_identifier)
+        elif exercise_type == "tug_dual_task":
+            # TUG requires two files - for now, use single file (will need to update frontend)
+            # TODO: Handle dual file upload
+            result = minibest.process_tug_dual_task(file_path, file_path, patient.patient_identifier)
         else:
-            raise HTTPException(status_code=400, detail="Unknown exercise type")
+            # Standard exercises (1-9) use single mat analysis
+            signals = minibest.load_basic_signals(file_path)
+            
+            if exercise_type == "sit_to_stand":
+                result = minibest.process_sit_to_stand(signals, patient.patient_identifier, used_hands, multiple_attempts)
+            elif exercise_type == "rise_to_toes":
+                result = minibest.process_rise_to_toes(signals, patient.patient_identifier)
+            elif exercise_type == "stance_eyes_open":
+                result = minibest.process_stance_eyes_open(signals, patient.patient_identifier)
+            elif exercise_type == "stance_eyes_closed":
+                result = minibest.process_stance_eyes_closed(signals, patient.patient_identifier)
+            elif exercise_type == "compensatory_stepping":
+                result = minibest.process_compensatory_stepping(signals, variant or "FORWARD", patient.patient_identifier)
+            elif exercise_type == "stand_one_leg":
+                result = minibest.process_stand_on_one_leg(signals, patient.patient_identifier, variant or "Left")
+            else:
+                raise HTTPException(status_code=400, detail="Unknown exercise type")
             
         # Sanitize results before saving/returning
         sanitized_features = sanitize_float(result.features)
         
         # Generate Plots Components
-        # Adjust exercise type for plotting if needed (e.g. stand_one_leg needs side)
-        plot_type = exercise_type
-        if exercise_type == "stand_one_leg":
-            v_str = variant.lower() if variant else "left"
-            plot_type = f"stand_one_leg_{v_str}"
-            
-        plot_data = generate_plot_components(plot_type, signals, sanitized_features)
+        plot_data = {}
         
-        # Generate Video (Replay)
-        video_b64 = None
-        if exercise_type in ["sit_to_stand", "stance_eyes_open", "stance_eyes_closed", "rise_to_toes", "stand_one_leg"]:
-             video_b64 = generate_video(signals, fps=10)
-             if video_b64:
-                 plot_data["replay"] = video_b64
+        # Gait exercises (10-14) use FGA-style plots
+        if exercise_type in ["change_gait_speed", "walk_head_turns_horizontal", "walk_pivot_turns", "step_over_obstacles", "tug_dual_task"]:
+            from web_backend.analysis import fga
+            from web_backend.analysis.plotting_utils import generate_fga_plot_components, generate_fga_video
+            
+            # Load FGA signals for plotting
+            fga_signals = fga.load_fga_signals(file_path)
+            
+            # Generate FGA plots
+            plot_data = generate_fga_plot_components(exercise_type, fga_signals, sanitized_features)
+            video_b64 = generate_fga_video(fga_signals, fps=10)
+            if video_b64:
+                plot_data["replay"] = video_b64
+        else:
+            # Standard exercises use single mat plots
+            # Adjust exercise type for plotting if needed
+            plot_type = exercise_type
+            if exercise_type == "stand_one_leg":
+                v_str = variant.lower() if variant else "left"
+                plot_type = f"stand_one_leg_{v_str}"
+            
+            plot_data = generate_plot_components(plot_type, signals, sanitized_features)
+            
+            # Generate Video (Replay) for all exercises
+            video_b64 = generate_video(signals, fps=10)
+            if video_b64:
+                plot_data["replay"] = video_b64
 
         # Save Result Files to Disk
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -209,6 +240,9 @@ async def analyze_fga(
     db: Session = Depends(get_db), 
     current_user: User = Depends(get_current_user)
 ):
+    from web_backend.analysis import fga
+    from web_backend.analysis.plotting_utils import generate_fga_plot_components, generate_fga_video
+    
     patient = db.query(Patient).filter(Patient.id == patient_id, Patient.clinician_id == current_user.id).first()
     if not patient:
         raise HTTPException(status_code=404, detail="Patient not found")
@@ -220,57 +254,86 @@ async def analyze_fga(
         shutil.copyfileobj(file.file, buffer)
         
     try:
-        # Calculate base metrics
-        metrics = fga_metrics.calculate_metrics(file_path)
-        if "error" in metrics:
-             raise Exception(metrics["error"])
-             
-        # Grade specific exercise
         score = 0
         explanation = ""
+        features = {}
+        signals = None
+        plot_data = {}
         
-        if exercise_num == 1: # Gait Level Surface
-            score, explanation = fga_metrics.grade_gait_level_surface(metrics)
-        elif exercise_num == 2: # Change Speed
-            score, explanation = fga_metrics.exercise02(metrics)
-        elif exercise_num == 3: # Horizontal Head Turns
-            score, explanation = fga_metrics.exercise03(metrics, manual_input)
-        elif exercise_num == 4: # Vertical Head Turns
-            score, explanation = fga_metrics.exercise04(metrics, manual_input)
-        elif exercise_num == 5: # Pivot Turn
-            score, explanation = fga_metrics.exercise05(metrics, manual_input)
-        elif exercise_num == 6: # Step Over Obstacle
-            score, explanation = fga_metrics.exercise06(metrics, manual_input)
-        elif exercise_num == 7: # Narrow Base
-            score, explanation = fga_metrics.exercise07(metrics)
-        elif exercise_num == 8: # Eyes Closed
-            score, explanation = fga_metrics.exercise08(metrics)
-        elif exercise_num == 9: # Backward
-            score, explanation = fga_metrics.exercise09(metrics)
-        elif exercise_num == 10: # Steps
-            # Exercise 10 is manual inputs only?
-            # The logic provided in exercise10 accepts a dict
-             score, explanation = fga_metrics.exercise10({"smoothness": manual_input, "effort": "Low", "balance": "Stable", "fatigue": 0}) # Simplification
-             
-        # Remove large arrays from metrics before saving to DB (JSON limits)
-        # We keep summary stats.
-        summary_metrics = {k: v for k, v in metrics.items() if not isinstance(v, (list, np.ndarray))}
-        summary_metrics["explanation"] = explanation
+        # Process exercise using new FGA module
+        if exercise_num == 1:  # Gait Level Surface
+            result = fga.process_fga_gait_level_surface(file_path, patient.patient_identifier)
+        elif exercise_num == 2:  # Change in Gait Speed
+            result = fga.process_fga_change_gait_speed(file_path, patient.patient_identifier)
+        elif exercise_num == 3:  # Horizontal Head Turns
+            result = fga.process_fga_horizontal_head_turns(file_path, patient.patient_identifier, manual_input)
+        elif exercise_num == 4:  # Vertical Head Turns
+            result = fga.process_fga_vertical_head_turns(file_path, patient.patient_identifier, manual_input)
+        elif exercise_num == 5:  # Pivot Turn
+            result = fga.process_fga_pivot_turn(file_path, patient.patient_identifier, manual_input)
+        elif exercise_num == 6:  # Step Over Obstacle
+            result = fga.process_fga_step_over_obstacle(file_path, patient.patient_identifier, manual_input)
+        elif exercise_num == 7:  # Narrow Base
+            result = fga.process_fga_narrow_base(file_path, patient.patient_identifier)
+        elif exercise_num == 8:  # Eyes Closed
+            result = fga.process_fga_eyes_closed(file_path, patient.patient_identifier)
+        elif exercise_num == 9:  # Ambulating Backwards
+            result = fga.process_fga_ambulating_backwards(file_path, patient.patient_identifier)
+        else:
+            raise HTTPException(status_code=400, detail=f"Exercise {exercise_num} not implemented")
         
-        sanitized_metrics = sanitize_float(summary_metrics)
+        score = result["score"]
+        explanation = result["explanation"]
+        features = result["features"]
+        signals = result.get("signals")
         
+        # Generate plots and video for all exercises if signals are available
+        if signals:
+            plot_data = generate_fga_plot_components(exercise_num, signals, features)
+            video_b64 = generate_fga_video(signals, fps=10)
+            if video_b64:
+                plot_data["replay"] = video_b64
+        
+        # Sanitize features
+        sanitized_features = sanitize_float(features)
+        
+        # Save Result Files to Disk
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        result_dir = f"data/results/{current_user.id}/{patient_id}/{timestamp}"
+        os.makedirs(result_dir, exist_ok=True)
+        
+        for key, b64_data in plot_data.items():
+            if b64_data:
+                try:
+                    ext = "gif" if key == "replay" else "png"
+                    file_name = f"{key}.{ext}"
+                    with open(f"{result_dir}/{file_name}", "wb") as f:
+                        f.write(base64.b64decode(b64_data))
+                    sanitized_features[f"saved_{key}_path"] = f"{result_dir}/{file_name}"
+                except Exception as e:
+                    print(f"Error saving {key}: {e}")
+        
+        # Save Result to DB
         db_result = TestResult(
             patient_id=patient_id,
             test_type="FGA",
             exercise_name=f"Exercise {exercise_num}",
             score=score,
-            details=sanitized_metrics,
+            details=sanitized_features,
             file_path=file_path
         )
         db.add(db_result)
         db.commit()
         
-        return {"score": score, "explanation": explanation, "metrics": sanitized_metrics}
+        # Return everything including plots
+        response_data = {
+            "score": score,
+            "explanation": explanation,
+            "features": sanitized_features
+        }
+        response_data.update(plot_data)  # Merge plots into response
+        
+        return response_data
 
     except Exception as e:
         import traceback

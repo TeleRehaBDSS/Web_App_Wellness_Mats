@@ -7,6 +7,11 @@ from .minibest import (
     process_stand_on_one_leg,
     process_stance_eyes_open,
     process_stance_eyes_closed,
+    process_change_gait_speed,
+    process_walk_head_turns_horizontal,
+    process_walk_pivot_turns,
+    process_step_over_obstacles,
+    process_tug_dual_task,
     BasicMatSignals
 )
 from .metrics import (
@@ -22,4 +27,5 @@ from .metrics import (
     exercise09,
     exercise10
 )
+from . import fga
 

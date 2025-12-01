@@ -3,6 +3,7 @@ from matplotlib.backends.backend_agg import FigureCanvasAgg
 import io
 import base64
 import numpy as np
+import pandas as pd
 import cv2
 import tempfile
 import os
@@ -820,6 +821,373 @@ def plot_one_leg_stability_map(s, features, stance_leg):
     return _save_plot_to_b64(fig)
 
 
+# --- FGA Gait Analysis Plots ---
+
+def plot_fga_stride_analysis(signals, features):
+    """Plot stride length over time for gait analysis."""
+    fig, ax = plt.subplots(figsize=(8, 4), facecolor='none')
+    ax.set_facecolor('none')
+    
+    gait_cycles = signals.gait_cycles
+    
+    if gait_cycles and len(gait_cycles) > 0:
+        stride_lengths = []
+        cycle_times = []
+        
+        # Get the first timepoint to calculate relative times
+        first_timepoint = None
+        if len(signals.time_s) > 0 and hasattr(signals, 'df') and 'timepoint' in signals.df.columns:
+            first_timepoint = signals.df['timepoint'].iloc[0]
+            if isinstance(first_timepoint, str):
+                first_timepoint = pd.to_datetime(first_timepoint)
+        
+        for cycle in gait_cycles:
+            if 'average_horizontal_distance' in cycle and cycle['average_horizontal_distance'] is not None:
+                stride_lengths.append(cycle['average_horizontal_distance'])
+                
+                # Get the actual time for this gait cycle from heel_strike timestamp
+                cycle_time = 0.0
+                if 'right_leg' in cycle and 'heel_strike' in cycle['right_leg']:
+                    heel_strike = cycle['right_leg']['heel_strike']
+                    if first_timepoint is not None and heel_strike is not None:
+                        if isinstance(heel_strike, pd.Timestamp):
+                            cycle_time = (heel_strike - first_timepoint).total_seconds()
+                        elif hasattr(heel_strike, '__sub__'):
+                            time_diff = heel_strike - first_timepoint
+                            cycle_time = time_diff.total_seconds() if hasattr(time_diff, 'total_seconds') else float(time_diff)
+                elif 'left_leg' in cycle and 'heel_strike' in cycle['left_leg']:
+                    heel_strike = cycle['left_leg']['heel_strike']
+                    if first_timepoint is not None and heel_strike is not None:
+                        if isinstance(heel_strike, pd.Timestamp):
+                            cycle_time = (heel_strike - first_timepoint).total_seconds()
+                        elif hasattr(heel_strike, '__sub__'):
+                            time_diff = heel_strike - first_timepoint
+                            cycle_time = time_diff.total_seconds() if hasattr(time_diff, 'total_seconds') else float(time_diff)
+                
+                cycle_times.append(cycle_time)
+        
+        if stride_lengths and len(cycle_times) == len(stride_lengths):
+            ax.plot(cycle_times, stride_lengths, 'o-', color='cyan', label='Stride Length', linewidth=2, markersize=6)
+            ax.axhline(y=np.mean(stride_lengths), color='yellow', linestyle='--', label=f'Mean: {np.mean(stride_lengths):.1f} cm', alpha=0.7)
+    
+    ax.set_title("Stride Length Over Time", color='white', fontsize=12)
+    ax.set_xlabel("Time (s)", color='white')
+    ax.set_ylabel("Stride Length (cm)", color='white')
+    ax.tick_params(colors='white')
+    ax.legend(loc="best", fontsize='small', facecolor='#333333', labelcolor='white')
+    ax.grid(True, alpha=0.3)
+    
+    return _save_plot_to_b64(fig)
+
+def plot_fga_cadence_analysis(signals, features):
+    """Plot cadence over time for gait analysis."""
+    fig, ax = plt.subplots(figsize=(8, 4), facecolor='none')
+    ax.set_facecolor('none')
+    
+    gait_cycles = signals.gait_cycles
+    
+    if gait_cycles and len(gait_cycles) > 0:
+        cadences = []
+        cycle_times = []
+        
+        # Get the first timepoint to calculate relative times
+        first_timepoint = None
+        if len(signals.time_s) > 0 and hasattr(signals, 'df') and 'timepoint' in signals.df.columns:
+            first_timepoint = signals.df['timepoint'].iloc[0]
+            if isinstance(first_timepoint, str):
+                first_timepoint = pd.to_datetime(first_timepoint)
+        
+        for cycle in gait_cycles:
+            if 'cadence' in cycle and cycle['cadence'] is not None:
+                cadences.append(cycle['cadence'])
+                
+                # Get the actual time for this gait cycle from heel_strike timestamp
+                cycle_time = 0.0
+                if 'right_leg' in cycle and 'heel_strike' in cycle['right_leg']:
+                    heel_strike = cycle['right_leg']['heel_strike']
+                    if first_timepoint is not None and heel_strike is not None:
+                        if isinstance(heel_strike, pd.Timestamp):
+                            cycle_time = (heel_strike - first_timepoint).total_seconds()
+                        elif hasattr(heel_strike, '__sub__'):
+                            time_diff = heel_strike - first_timepoint
+                            cycle_time = time_diff.total_seconds() if hasattr(time_diff, 'total_seconds') else float(time_diff)
+                elif 'left_leg' in cycle and 'heel_strike' in cycle['left_leg']:
+                    heel_strike = cycle['left_leg']['heel_strike']
+                    if first_timepoint is not None and heel_strike is not None:
+                        if isinstance(heel_strike, pd.Timestamp):
+                            cycle_time = (heel_strike - first_timepoint).total_seconds()
+                        elif hasattr(heel_strike, '__sub__'):
+                            time_diff = heel_strike - first_timepoint
+                            cycle_time = time_diff.total_seconds() if hasattr(time_diff, 'total_seconds') else float(time_diff)
+                
+                cycle_times.append(cycle_time)
+        
+        if cadences and len(cycle_times) == len(cadences):
+            ax.plot(cycle_times, cadences, 'o-', color='magenta', label='Cadence', linewidth=2, markersize=6)
+            ax.axhline(y=np.mean(cadences), color='yellow', linestyle='--', label=f'Mean: {np.mean(cadences):.1f} steps/min', alpha=0.7)
+    
+    ax.set_title("Cadence Over Time", color='white', fontsize=12)
+    ax.set_xlabel("Time (s)", color='white')
+    ax.set_ylabel("Cadence (steps/min)", color='white')
+    ax.tick_params(colors='white')
+    ax.legend(loc="best", fontsize='small', facecolor='#333333', labelcolor='white')
+    ax.grid(True, alpha=0.3)
+    
+    return _save_plot_to_b64(fig)
+
+def plot_fga_cop_trajectories(signals, features):
+    """Plot CoP trajectories for left and right foot (NOT butterfly plot)."""
+    fig, ax = plt.subplots(figsize=(8, 6), facecolor='none')
+    ax.set_facecolor('none')
+    
+    cop_traces = signals.cop_traces
+    
+    # Extract left and right CoP traces
+    # Note: cop_traces uses 'x' and 'y' keys, not 'cop_x' and 'cop_y'
+    left_cop_x = []
+    left_cop_y = []
+    right_cop_x = []
+    right_cop_y = []
+    
+    for trace in cop_traces:
+        if 'foot' in trace and 'x' in trace and 'y' in trace:
+            foot = trace['foot']
+            cop_x = trace['x']
+            cop_y = trace['y']
+            
+            # FIX: Swap left and right (user says they're swapped)
+            if foot == 'left':
+                # This is actually right foot
+                if isinstance(cop_x, list):
+                    right_cop_x.extend(cop_x)
+                else:
+                    right_cop_x.append(cop_x)
+                if isinstance(cop_y, list):
+                    right_cop_y.extend(cop_y)
+                else:
+                    right_cop_y.append(cop_y)
+            elif foot == 'right':
+                # This is actually left foot
+                if isinstance(cop_x, list):
+                    left_cop_x.extend(cop_x)
+                else:
+                    left_cop_x.append(cop_x)
+                if isinstance(cop_y, list):
+                    left_cop_y.extend(cop_y)
+                else:
+                    left_cop_y.append(cop_y)
+    
+    # Plot left foot CoP (blue) - now correctly swapped
+    if left_cop_x and left_cop_y:
+        left_cop_x_arr = np.array(left_cop_x)
+        left_cop_y_arr = np.array(left_cop_y)
+        # Center around mean
+        left_cop_x_centered = left_cop_x_arr - np.mean(left_cop_x_arr)
+        left_cop_y_centered = left_cop_y_arr - np.mean(left_cop_y_arr)
+        ax.plot(left_cop_x_centered, left_cop_y_centered, 'b-', alpha=0.6, linewidth=1.5, label='Left Foot CoP')
+        ax.scatter(left_cop_x_centered, left_cop_y_centered, c='blue', s=2, alpha=0.4)
+        ax.plot(np.mean(left_cop_x_centered), np.mean(left_cop_y_centered), 'b+', markersize=12, markeredgewidth=2, label='Left Mean')
+    
+    # Plot right foot CoP (red) - now correctly swapped
+    if right_cop_x and right_cop_y:
+        right_cop_x_arr = np.array(right_cop_x)
+        right_cop_y_arr = np.array(right_cop_y)
+        # Center around mean
+        right_cop_x_centered = right_cop_x_arr - np.mean(right_cop_x_arr)
+        right_cop_y_centered = right_cop_y_arr - np.mean(right_cop_y_arr)
+        ax.plot(right_cop_x_centered, right_cop_y_centered, 'r-', alpha=0.6, linewidth=1.5, label='Right Foot CoP')
+        ax.scatter(right_cop_x_centered, right_cop_y_centered, c='red', s=2, alpha=0.4)
+        ax.plot(np.mean(right_cop_x_centered), np.mean(right_cop_y_centered), 'r+', markersize=12, markeredgewidth=2, label='Right Mean')
+    
+    # Add center lines
+    ax.axhline(0, color='gray', linestyle=':', alpha=0.5)
+    ax.axvline(0, color='gray', linestyle=':', alpha=0.5)
+    
+    ax.set_title("CoP Trajectories (Left vs Right Foot)", color='white', fontsize=12)
+    ax.set_xlabel("Medial-Lateral (X) - Centered", color='white')
+    ax.set_ylabel("Anterior-Posterior (Y) - Centered", color='white')
+    ax.tick_params(colors='white')
+    ax.legend(loc="best", fontsize='small', facecolor='#333333', labelcolor='white')
+    ax.axis('equal')
+    ax.grid(True, alpha=0.3)
+    
+    return _save_plot_to_b64(fig)
+
+def plot_fga_butterfly_cop(signals, features):
+    """
+    Plot proper butterfly CoP plot showing continuous CoP trace during gait.
+    The butterfly shape shows the double support phase at the intersection.
+    """
+    fig, ax = plt.subplots(figsize=(8, 6), facecolor='none')
+    ax.set_facecolor('none')
+    
+    # Calculate overall CoP from all frames (continuous trace)
+    frames = signals.frames
+    time_s = signals.time_s
+    
+    if len(frames) == 0:
+        return _save_plot_to_b64(fig)
+    
+    # Filter to active frames only
+    active_frames = []
+    active_times = []
+    for i, frame in enumerate(frames):
+        if np.sum(frame) > 10.0:
+            active_frames.append(frame)
+            active_times.append(time_s[i])
+    
+    if len(active_frames) == 0:
+        return _save_plot_to_b64(fig)
+    
+    # Calculate CoP for each active frame
+    cop_x_all = []
+    cop_y_all = []
+    
+    for frame in active_frames:
+        rows, cols = frame.shape
+        row_indices = np.arange(rows).reshape(rows, 1)
+        col_indices = np.arange(cols).reshape(1, cols)
+        
+        total_force = np.sum(frame)
+        if total_force > 0:
+            cop_y = np.sum(frame * row_indices) / total_force
+            cop_x = np.sum(frame * col_indices) / total_force
+            cop_x_all.append(cop_x)
+            cop_y_all.append(cop_y)
+    
+    if len(cop_x_all) == 0:
+        return _save_plot_to_b64(fig)
+    
+    # Convert to arrays
+    cop_x_arr = np.array(cop_x_all)
+    cop_y_arr = np.array(cop_y_all)
+    
+    # Center around mean for visualization
+    cop_x_centered = cop_x_arr - np.mean(cop_x_arr)
+    cop_y_centered = cop_y_arr - np.mean(cop_y_arr)
+    
+    # Plot continuous CoP trace (butterfly shape)
+    # Color by time to show progression
+    time_colors = active_times[:len(cop_x_centered)] if len(active_times) >= len(cop_x_centered) else active_times + [active_times[-1]] * (len(cop_x_centered) - len(active_times))
+    scatter = ax.scatter(cop_x_centered, cop_y_centered, c=time_colors, 
+                        cmap='viridis', s=3, alpha=0.6, label='CoP Trace')
+    
+    # Plot the continuous line
+    ax.plot(cop_x_centered, cop_y_centered, 'w-', linewidth=1.0, alpha=0.4, label='CoP Path')
+    
+    # Mark the center (double support phase intersection)
+    ax.plot(0, 0, 'ro', markersize=8, markeredgecolor='yellow', markeredgewidth=2, 
+            label='Center (Double Support)', zorder=10)
+    
+    # Add center lines
+    ax.axhline(0, color='gray', linestyle=':', alpha=0.3)
+    ax.axvline(0, color='gray', linestyle=':', alpha=0.3)
+    
+    # Add colorbar for time progression
+    cbar = plt.colorbar(scatter, ax=ax)
+    cbar.set_label('Time (s)', color='white')
+    cbar.ax.tick_params(colors='white')
+    
+    ax.set_title("Butterfly CoP Plot (Continuous CoP Trace)", color='white', fontsize=12)
+    ax.set_xlabel("Medial-Lateral (X) - Centered", color='white')
+    ax.set_ylabel("Anterior-Posterior (Y) - Centered", color='white')
+    ax.tick_params(colors='white')
+    ax.legend(loc="best", fontsize='small', facecolor='#333333', labelcolor='white')
+    ax.axis('equal')
+    ax.grid(True, alpha=0.3)
+    
+    return _save_plot_to_b64(fig)
+
+def generate_fga_video(signals, fps=10):
+    """
+    Generate video replay showing gait across 6 mats (treadmill view).
+    Uses same 'hot' colormap (black-red-yellow) as MiniBEST exercises.
+    """
+    frames = signals.frames
+    time_s = signals.time_s
+    
+    if len(frames) == 0:
+        return None
+    
+    # Filter frames to only show those with meaningful pressure (like MiniBEST)
+    active_frames = []
+    active_times = []
+    for i, frame in enumerate(frames):
+        if np.sum(frame) > 10.0:  # Threshold for meaningful pressure
+            active_frames.append(frame)
+            active_times.append(time_s[i])
+    
+    if len(active_frames) < 2:
+        # Fallback to all frames if filtering removed too much
+        active_frames = frames
+        active_times = time_s
+    
+    # Downsample for GIF size
+    total_frames = len(active_frames)
+    if total_frames > 80:
+        step = int(np.ceil(total_frames / 60))
+    else:
+        step = 1
+    
+    frames_disp = active_frames[::step]
+    times_disp = np.array(active_times)[::step]
+    
+    # Robust scaling (same as MiniBEST)
+    if len(frames_disp) > 0 and np.max(frames_disp) > 0:
+        vmax = np.percentile([np.max(f) for f in frames_disp], 99.5)
+        if vmax < 1.0:
+            vmax = 1.0
+    else:
+        vmax = 1.0
+    
+    # Setup plot for frame generation - wider for 6 mats
+    fig, ax = plt.subplots(figsize=(12, 3), facecolor='black')
+    ax.set_facecolor('black')
+    ax.set_position([0, 0, 1, 1])
+    ax.axis('off')
+    
+    # Use 'hot' colormap (black-red-yellow) - same as MiniBEST
+    im_plot = ax.imshow(frames_disp[0], cmap='hot', vmin=0, vmax=vmax, interpolation='nearest', aspect='auto')
+    txt = ax.text(0.5, 0.95, f"Time: {times_disp[0]:.2f}s", 
+                  size=12, ha="center", transform=ax.transAxes, color='white', weight='bold')
+    
+    pil_frames = []
+    
+    try:
+        for i in range(len(frames_disp)):
+            im_plot.set_data(frames_disp[i])
+            txt.set_text(f"Time: {times_disp[i]:.2f}s")
+            
+            with io.BytesIO() as buf:
+                fig.savefig(buf, format='png', facecolor='black', bbox_inches='tight')
+                buf.seek(0)
+                img = Image.open(buf).convert("RGB")
+                pil_frames.append(img)
+        
+        if pil_frames:
+            duration = int(1000 / fps)
+            
+            with io.BytesIO() as output:
+                pil_frames[0].save(
+                    output,
+                    format="GIF",
+                    save_all=True,
+                    append_images=pil_frames[1:],
+                    duration=duration,
+                    loop=0
+                )
+                b64_video = base64.b64encode(output.getvalue()).decode('utf-8')
+                return b64_video
+                
+    except Exception as e:
+        print(f"Error generating FGA video: {e}")
+        import traceback
+        traceback.print_exc()
+    finally:
+        plt.close(fig)
+    
+    return None
+
 def generate_plot_components(exercise_type, signals, features):
     """
     Returns a dictionary of plot components (base64 strings).
@@ -847,4 +1215,41 @@ def generate_plot_components(exercise_type, signals, features):
         components["ap_plot"] = plot_one_leg_stabilogram(signals, features) # Filtered Stabilogram
         components["stability_plot"] = plot_one_leg_stability_map(signals, features, leg) # Filtered Map
 
+    return components
+
+def generate_fga_plot_components(exercise_num, signals, features):
+    """
+    Generate FGA-specific plot components for all exercises.
+    """
+    components = {}
+    
+    try:
+        # Stride analysis plot (for all exercises)
+        components["stride_plot"] = plot_fga_stride_analysis(signals, features)
+    except Exception as e:
+        print(f"Error generating stride plot: {e}")
+        components["stride_plot"] = None
+    
+    try:
+        # Cadence analysis plot (for all exercises)
+        components["cadence_plot"] = plot_fga_cadence_analysis(signals, features)
+    except Exception as e:
+        print(f"Error generating cadence plot: {e}")
+        components["cadence_plot"] = None
+    
+    try:
+        # CoP Trajectories plot (for all exercises)
+        components["cop_trajectories_plot"] = plot_fga_cop_trajectories(signals, features)
+    except Exception as e:
+        print(f"Error generating CoP trajectories plot: {e}")
+        components["cop_trajectories_plot"] = None
+    
+    # Butterfly CoP plot (for forward walking exercises)
+    if exercise_num in [1, 2, 3, 4, 8, 9]:
+        try:
+            components["butterfly_cop_plot"] = plot_fga_butterfly_cop(signals, features)
+        except Exception as e:
+            print(f"Error generating butterfly CoP plot: {e}")
+            components["butterfly_cop_plot"] = None
+    
     return components
