@@ -1214,8 +1214,104 @@ def generate_plot_components(exercise_type, signals, features):
         components["force_plot"] = plot_one_leg_sway(signals, features) # Filtered Sway
         components["ap_plot"] = plot_one_leg_stabilogram(signals, features) # Filtered Stabilogram
         components["stability_plot"] = plot_one_leg_stability_map(signals, features, leg) # Filtered Map
+    
+    elif exercise_type in ["compensatory_stepping_forward", "compensatory_stepping_backward", "compensatory_stepping_lateral"]:
+        # Use similar plots to stance exercises but with step markers
+        components["force_plot"] = plot_compensatory_stepping_cop(signals, features) # CoP trajectory with step markers
+        components["ap_plot"] = plot_compensatory_stepping_stabilogram(signals, features) # Stabilogram
+        components["stability_plot"] = plot_compensatory_stepping_steps(signals, features) # Step analysis
 
     return components
+
+# --- Compensatory Stepping Plots ---
+
+def plot_compensatory_stepping_cop(signals, features):
+    """Plot CoP trajectory over time with step markers."""
+    fig, ax = plt.subplots(figsize=(10, 4), facecolor='none')
+    ax.set_facecolor('none')
+    
+    time_s = signals.time_s
+    cop_x = signals.cop_x
+    cop_y = signals.cop_y
+    
+    # Plot CoP trajectory
+    valid_mask = ~(np.isnan(cop_x) | np.isnan(cop_y))
+    if np.any(valid_mask):
+        ax.plot(time_s[valid_mask], cop_x[valid_mask], label='CoP X (Medial-Lateral)', color='cyan', linewidth=1.5, alpha=0.7)
+        ax.plot(time_s[valid_mask], cop_y[valid_mask], label='CoP Y (Anterior-Posterior)', color='magenta', linewidth=1.5, alpha=0.7)
+    
+    # Mark step times if available
+    reaction_time = features.get("Reaction Time (s)", features.get("Reaction Time (s)", None))
+    num_steps = features.get("Number of Steps", 0)
+    
+    if reaction_time is not None and not np.isnan(reaction_time):
+        ax.axvline(x=reaction_time, color='yellow', linestyle='--', linewidth=2, label='First Step', alpha=0.8)
+    
+    ax.set_xlabel('Time (s)', color='white')
+    ax.set_ylabel('CoP Position (sensor units)', color='white')
+    ax.set_title('CoP Trajectory Over Time (with Step Markers)', color='white', fontsize=12)
+    ax.legend(loc='best', fontsize='small', facecolor='#333333', labelcolor='white')
+    ax.grid(True, alpha=0.3, color='gray')
+    ax.tick_params(colors='white')
+    
+    return _save_plot_to_b64(fig)
+
+def plot_compensatory_stepping_stabilogram(signals, features):
+    """Plot CoP stabilogram (X vs Y) for compensatory stepping."""
+    fig, ax = plt.subplots(figsize=(6, 6), facecolor='none')
+    ax.set_facecolor('none')
+    
+    cop_x = signals.cop_x
+    cop_y = signals.cop_y
+    
+    valid_mask = ~(np.isnan(cop_x) | np.isnan(cop_y))
+    if np.any(valid_mask):
+        ax.plot(cop_x[valid_mask], cop_y[valid_mask], 'o-', color='cyan', markersize=2, linewidth=1, alpha=0.6, label='CoP Path')
+        
+        # Mark start and end
+        if len(cop_x[valid_mask]) > 0:
+            ax.plot(cop_x[valid_mask][0], cop_y[valid_mask][0], 'go', markersize=8, label='Start', zorder=5)
+            ax.plot(cop_x[valid_mask][-1], cop_y[valid_mask][-1], 'ro', markersize=8, label='End', zorder=5)
+    
+    ax.set_xlabel('CoP X (Medial-Lateral)', color='white')
+    ax.set_ylabel('CoP Y (Anterior-Posterior)', color='white')
+    ax.set_title('CoP Stabilogram (X vs Y)', color='white', fontsize=12)
+    ax.legend(loc='best', fontsize='small', facecolor='#333333', labelcolor='white')
+    ax.grid(True, alpha=0.3, color='gray')
+    ax.tick_params(colors='white')
+    ax.axis('equal')
+    
+    return _save_plot_to_b64(fig)
+
+def plot_compensatory_stepping_steps(signals, features):
+    """Plot step analysis for compensatory stepping."""
+    fig, ax = plt.subplots(figsize=(8, 4), facecolor='none')
+    ax.set_facecolor('none')
+    
+    num_steps = features.get("Number of Steps", 0)
+    step_sizes = features.get("Step Sizes (sensor units)", [])
+    largest_step = features.get("Largest Step Size", 0)
+    reaction_time = features.get("Reaction Time (s)", None)
+    stabilization_time = features.get("Stabilization Time (s)", None)
+    
+    # Create bar chart of step sizes
+    if step_sizes and len(step_sizes) > 0:
+        step_nums = list(range(1, len(step_sizes) + 1))
+        colors = ['green' if size >= 5.0 else 'orange' if size >= 2.0 else 'red' for size in step_sizes]
+        ax.bar(step_nums, step_sizes, color=colors, alpha=0.7, edgecolor='white', linewidth=1.5)
+        ax.axhline(y=5.0, color='yellow', linestyle='--', linewidth=2, label='Large Step Threshold', alpha=0.8)
+        ax.set_xlabel('Step Number', color='white')
+        ax.set_ylabel('Step Size (sensor units)', color='white')
+        ax.set_title(f'Step Analysis (Total: {num_steps} steps)', color='white', fontsize=12)
+        ax.legend(loc='best', fontsize='small', facecolor='#333333', labelcolor='white')
+        ax.grid(True, alpha=0.3, color='gray', axis='y')
+        ax.tick_params(colors='white')
+    else:
+        ax.text(0.5, 0.5, f'No steps detected\n(Total: {num_steps})', 
+                ha='center', va='center', color='white', fontsize=14, transform=ax.transAxes)
+        ax.set_title('Step Analysis', color='white', fontsize=12)
+    
+    return _save_plot_to_b64(fig)
 
 def generate_fga_plot_components(exercise_num, signals, features):
     """

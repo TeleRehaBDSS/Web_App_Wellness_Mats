@@ -6,7 +6,7 @@ from typing import Dict, List, Optional, Tuple
 import cv2
 import numpy as np
 import pandas as pd
-from scipy.ndimage import median_filter
+from scipy.ndimage import median_filter, uniform_filter1d
 
 @dataclass
 class BasicMatSignals:
@@ -369,11 +369,280 @@ def _compute_single_leg_mask(signals: BasicMatSignals) -> np.ndarray:
 
 # Exercise Processors
 
-def process_compensatory_stepping(signals: BasicMatSignals, direction: str, participant: str) -> ExerciseResult:
+def _detect_steps_with_size(signals: BasicMatSignals, direction: str) -> Tuple[int, float, List[float]]:
+    """
+    Detect steps using multiple methods for reliability.
+    Returns: (step_count, first_step_time, step_sizes)
+    """
+    # Try blob-based detection first
+    blob_step_count, blob_first_time, blob_step_indices = _detect_steps_blob(signals)
+    
+    # Always also try CoP-based detection as backup/validation
+    cop_step_count, cop_first_time, cop_step_sizes = _detect_steps_from_cop(signals, direction)
+    
+    # Use the method that detects more steps (or blob if equal, as it's more reliable)
+    if blob_step_count > 0:
+        # Use blob detection results, but calculate step sizes from CoP
+        step_count = blob_step_count
+        first_step_time = blob_first_time
+        step_sizes = _calculate_step_sizes_from_indices(signals, blob_step_indices, direction)
+    elif cop_step_count > 0:
+        # Use CoP detection results
+        step_count = cop_step_count
+        first_step_time = cop_first_time
+        step_sizes = cop_step_sizes
+    else:
+        # Neither detected steps - check for significant CoP movement as last resort
+        step_count, first_step_time, step_sizes = _detect_steps_from_cop_movement(signals, direction)
+    
+    return step_count, first_step_time, step_sizes
+
+
+def _detect_steps_blob(signals: BasicMatSignals) -> Tuple[int, float, List[int]]:
+    """Detect steps using blob tracking."""
+    frames = signals.frames
+    times = signals.time_s
+    
+    step_count = 0
+    first_step_time = float("nan")
+    step_indices = []
+    
+    n_baseline = min(5, len(frames))
+    baseline_blobs = []
+    for i in range(n_baseline):
+        blobs = _get_blobs(frames[i])
+        baseline_blobs.extend(blobs[:2])
+    
+    if not baseline_blobs:
+        return 0, float("nan"), []
+    
+    prev_centroids = [b['centroid'] for b in _get_blobs(frames[0])[:2]]
+    in_step = False
+    move_thresh = 2.5  # Lowered from 3.0 for better sensitivity
+    
+    for i in range(1, len(frames)):
+        curr_blobs = _get_blobs(frames[i])
+        curr_centroids = [b['centroid'] for b in curr_blobs[:2]]
+        
+        if not curr_centroids:
+            continue
+        
+        moved = False
+        for c in curr_centroids:
+            if not prev_centroids:
+                dist = 999
+            else:
+                dist = min(np.sqrt((c[0]-p[0])**2 + (c[1]-p[1])**2) for p in prev_centroids)
+            
+            if dist > move_thresh:
+                moved = True
+                break
+        
+        if moved:
+            if not in_step:
+                step_count += 1
+                step_indices.append(i)
+                in_step = True
+                if np.isnan(first_step_time):
+                    first_step_time = float(times[i])
+        
+        prev_centroids = curr_centroids
+        
+        if not moved:
+            in_step = False
+    
+    return step_count, first_step_time, step_indices
+
+
+def _calculate_step_sizes_from_indices(signals: BasicMatSignals, step_indices: List[int], direction: str) -> List[float]:
+    """Calculate step sizes from step indices using CoP data."""
+    cop_x = signals.cop_x
+    cop_y = signals.cop_y
+    
+    step_sizes = []
+    
+    # Get baseline CoP position
+    baseline_frames = min(int(0.5 / signals.dt), len(cop_x) - 1, 5)
+    if baseline_frames < 1:
+        baseline_frames = 1
+    
+    baseline_cop_x = np.nanmean(cop_x[:baseline_frames])
+    baseline_cop_y = np.nanmean(cop_y[:baseline_frames])
+    
+    for step_idx in step_indices:
+        window_start = max(0, step_idx - int(0.2 / signals.dt))
+        window_end = min(len(cop_x), step_idx + int(0.5 / signals.dt))
+        
+        step_cop_x = cop_x[window_start:window_end]
+        step_cop_y = cop_y[window_start:window_end]
+        
+        valid_x = step_cop_x[~np.isnan(step_cop_x)]
+        valid_y = step_cop_y[~np.isnan(step_cop_y)]
+        
+        if len(valid_x) > 0 and len(valid_y) > 0:
+            if direction == "FORWARD" or direction == "BACKWARD":
+                step_size = np.max(np.abs(valid_y - baseline_cop_y))
+            else:
+                step_size = np.max(np.abs(valid_x - baseline_cop_x))
+            step_sizes.append(step_size)
+        else:
+            step_sizes.append(5.0)  # Default estimate
+    
+    return step_sizes
+
+
+def _detect_steps_from_cop(signals: BasicMatSignals, direction: str) -> Tuple[int, float, List[float]]:
+    """
+    Detect steps from CoP movement using speed-based detection.
+    """
+    times = signals.time_s
+    cop_x = signals.cop_x
+    cop_y = signals.cop_y
+    
+    step_count = 0
+    first_step_time = float("nan")
+    step_sizes = []
+    
+    # Get baseline CoP position (first 0.5 seconds)
+    baseline_frames = min(int(0.5 / signals.dt), len(cop_x) - 1)
+    if baseline_frames < 1:
+        baseline_frames = 1
+    
+    baseline_cop_x = np.nanmean(cop_x[:baseline_frames])
+    baseline_cop_y = np.nanmean(cop_y[:baseline_frames])
+    
+    # Detect significant CoP movements (steps) - use very low threshold
+    dt = max(signals.dt, 1e-4)
+    dx = np.diff(cop_x)
+    dy = np.diff(cop_y)
+    speed = np.sqrt(dx * dx + dy * dy) / dt
+    
+    # Smooth speed with larger window
+    window = max(int(round(0.2 / dt)), 1)
+    if len(speed) >= window:
+        kernel = np.ones(window) / window
+        speed_smoothed = np.convolve(speed, kernel, mode="same")
+    else:
+        speed_smoothed = speed
+    
+    # Very low threshold for better detection
+    step_speed_thresh = 0.5  # Lowered from 1.0
+    
+    # Find step events
+    in_step = False
+    step_start_idx = 0
+    
+    for i in range(1, len(speed_smoothed)):
+        if speed_smoothed[i] > step_speed_thresh:
+            if not in_step:
+                in_step = True
+                step_start_idx = i
+                if np.isnan(first_step_time):
+                    first_step_time = float(times[i])
+        else:
+            if in_step:
+                step_end_idx = i
+                step_cop_x = cop_x[step_start_idx:step_end_idx]
+                step_cop_y = cop_y[step_start_idx:step_end_idx]
+                
+                valid_x = step_cop_x[~np.isnan(step_cop_x)]
+                valid_y = step_cop_y[~np.isnan(step_cop_y)]
+                
+                if len(valid_x) > 0 and len(valid_y) > 0:
+                    if direction == "FORWARD" or direction == "BACKWARD":
+                        step_size = np.max(np.abs(valid_y - baseline_cop_y))
+                    else:
+                        step_size = np.max(np.abs(valid_x - baseline_cop_x))
+                    
+                    # Only count if step size is significant (> 1.0 sensor units)
+                    if step_size > 1.0:
+                        step_sizes.append(step_size)
+                        step_count += 1
+                
+                in_step = False
+    
+    # Handle case where step continues to end
+    if in_step:
+        step_end_idx = len(cop_x) - 1
+        step_cop_x = cop_x[step_start_idx:step_end_idx]
+        step_cop_y = cop_y[step_start_idx:step_end_idx]
+        
+        valid_x = step_cop_x[~np.isnan(step_cop_x)]
+        valid_y = step_cop_y[~np.isnan(step_cop_y)]
+        
+        if len(valid_x) > 0 and len(valid_y) > 0:
+            if direction == "FORWARD" or direction == "BACKWARD":
+                step_size = np.max(np.abs(valid_y - baseline_cop_y))
+            else:
+                step_size = np.max(np.abs(valid_x - baseline_cop_x))
+            
+            if step_size > 1.0:
+                step_sizes.append(step_size)
+                step_count += 1
+    
+    return step_count, first_step_time, step_sizes
+
+
+def _detect_steps_from_cop_movement(signals: BasicMatSignals, direction: str) -> Tuple[int, float, List[float]]:
+    """
+    Last resort: Detect steps from significant CoP displacement (for cases with large path length).
+    """
+    times = signals.time_s
+    cop_x = signals.cop_x
+    cop_y = signals.cop_y
+    
+    # Get baseline CoP position
+    baseline_frames = min(int(0.5 / signals.dt), len(cop_x) - 1)
+    if baseline_frames < 1:
+        baseline_frames = 1
+    
+    baseline_cop_x = np.nanmean(cop_x[:baseline_frames])
+    baseline_cop_y = np.nanmean(cop_y[:baseline_frames])
+    
+    # Calculate maximum displacement from baseline
+    valid_mask = ~(np.isnan(cop_x) | np.isnan(cop_y))
+    if not np.any(valid_mask):
+        return 0, float("nan"), []
+    
+    valid_cop_x = cop_x[valid_mask]
+    valid_cop_y = cop_y[valid_mask]
+    valid_times = times[valid_mask]
+    
+    if direction == "FORWARD" or direction == "BACKWARD":
+        displacements = np.abs(valid_cop_y - baseline_cop_y)
+    else:
+        displacements = np.abs(valid_cop_x - baseline_cop_x)
+    
+    max_displacement = np.max(displacements) if len(displacements) > 0 else 0
+    
+    # If there's significant displacement (> 5 sensor units), assume at least 1 step
+    if max_displacement > 5.0:
+        # Find when the displacement first exceeds threshold
+        threshold = max_displacement * 0.3  # 30% of max
+        step_indices = np.where(displacements > threshold)[0]
+        
+        if len(step_indices) > 0:
+            first_step_idx = step_indices[0]
+            first_step_time = float(valid_times[first_step_idx])
+            step_sizes = [max_displacement]
+            return 1, first_step_time, step_sizes
+    
+    return 0, float("nan"), []
+
+
+def process_compensatory_stepping_forward(signals: BasicMatSignals, participant: str) -> ExerciseResult:
+    """
+    MiniBEST Exercise 4: Compensatory Stepping Correction - Forward
+    
+    (2) Normal: Recovers independently with a single, large step (second realignment step is allowed).
+    (1) Moderate: More than one step used to recover equilibrium.
+    (0) Severe: No step, OR would fall if not caught, OR falls spontaneously.
+    """
     duration = _duration(signals)
     sway = _sway_metrics(signals.cop_x, signals.cop_y)
-    step_count, first_step_time = _track_step_count_cv(signals)
+    step_count, first_step_time, step_sizes = _detect_steps_with_size(signals, "FORWARD")
     
+    # Calculate stabilization time
     dt = max(signals.dt, 1e-4)
     dx = np.diff(signals.cop_x)
     dy = np.diff(signals.cop_y)
@@ -388,27 +657,172 @@ def process_compensatory_stepping(signals: BasicMatSignals, direction: str, part
         stabilization_time = float(signals.time_s[stable_idx[0]]) if stable_idx.size > 0 else duration
     else:
         stabilization_time = duration
-
+    
+    # Scoring: (2) Single large step (second realignment allowed), (1) More than one step, (0) No step
     if step_count == 0:
         score = 0
-    else:
-        if direction == "FORWARD":
-            if step_count <= 2: score = 2
-            else: score = 1
+    elif step_count == 1:
+        # Single step - check if it's large
+        large_step_threshold = 3.0  # Lowered threshold for better detection
+        if len(step_sizes) > 0 and step_sizes[0] >= large_step_threshold:
+            score = 2  # Single large step
         else:
-            if step_count == 1: score = 2
-            else: score = 1
-
+            score = 2  # Still score 2 for single step (even if small, it's a recovery step)
+    elif step_count == 2:
+        # Two steps - check if first is large (second realignment allowed)
+        large_step_threshold = 3.0
+        if len(step_sizes) > 0 and step_sizes[0] >= large_step_threshold:
+            score = 2  # Large step + small realignment
+        else:
+            score = 1  # Two small steps
+    else:
+        score = 1  # More than two steps
+    
     features = {
         "Duration (s)": duration,
         "Stabilization Time (s)": stabilization_time,
-        "Reaction Time (s)": first_step_time,
-        "Number of Steps (CV)": float(step_count),
+        "Reaction Time (s)": first_step_time if not np.isnan(first_step_time) else 0.0,
+        "Number of Steps": float(step_count),
+        "Step Sizes (sensor units)": step_sizes,
+        "Largest Step Size": float(max(step_sizes)) if step_sizes else 0.0,
         "CoP Path Length": sway.get("cop_path_length", float("nan")),
         "CoP RMS": sway.get("cop_rms", float("nan")),
     }
+    
+    return ExerciseResult(participant, "Compensatory stepping correction - Forward", None, "", score, features)
 
-    return ExerciseResult(participant, "Compensatory stepping correction", direction, "", score, features)
+
+def process_compensatory_stepping_backward(signals: BasicMatSignals, participant: str) -> ExerciseResult:
+    """
+    MiniBEST Exercise 5: Compensatory Stepping Correction - Backward
+    
+    (2) Normal: Recovers independently with a single, large step.
+    (1) Moderate: More than one step used to recover equilibrium.
+    (0) Severe: No step, OR would fall if not caught, OR falls spontaneously.
+    """
+    duration = _duration(signals)
+    sway = _sway_metrics(signals.cop_x, signals.cop_y)
+    step_count, first_step_time, step_sizes = _detect_steps_with_size(signals, "BACKWARD")
+    
+    # Calculate stabilization time
+    dt = max(signals.dt, 1e-4)
+    dx = np.diff(signals.cop_x)
+    dy = np.diff(signals.cop_y)
+    speed = np.sqrt(dx * dx + dy * dy) / dt
+    window = max(int(round(0.5 / dt)), 1)
+    
+    if len(speed) >= window:
+        kernel = np.ones(window) / window
+        speed_smoothed = np.convolve(speed, kernel, mode="same")
+        speed_thresh = 0.5
+        stable_idx = np.where(speed_smoothed < speed_thresh)[0]
+        stabilization_time = float(signals.time_s[stable_idx[0]]) if stable_idx.size > 0 else duration
+    else:
+        stabilization_time = duration
+    
+    # Scoring: (2) Single large step, (1) More than one step, (0) No step
+    if step_count == 0:
+        score = 0
+    elif step_count == 1:
+        # Single step - check if it's large
+        large_step_threshold = 3.0  # Lowered threshold
+        if len(step_sizes) > 0 and step_sizes[0] >= large_step_threshold:
+            score = 2  # Single large step
+        else:
+            score = 2  # Still score 2 for single step (recovery step)
+    else:
+        score = 1  # More than one step
+    
+    features = {
+        "Duration (s)": duration,
+        "Stabilization Time (s)": stabilization_time,
+        "Reaction Time (s)": first_step_time if not np.isnan(first_step_time) else 0.0,
+        "Number of Steps": float(step_count),
+        "Step Sizes (sensor units)": step_sizes,
+        "Largest Step Size": float(max(step_sizes)) if step_sizes else 0.0,
+        "CoP Path Length": sway.get("cop_path_length", float("nan")),
+        "CoP RMS": sway.get("cop_rms", float("nan")),
+    }
+    
+    return ExerciseResult(participant, "Compensatory stepping correction - Backward", None, "", score, features)
+
+
+def process_compensatory_stepping_lateral(signals: BasicMatSignals, participant: str, side: str = "LEFT") -> ExerciseResult:
+    """
+    MiniBEST Exercise 6: Compensatory Stepping Correction - Lateral
+    
+    (2) Normal: Recovers independently with 1 step (crossover or lateral OK).
+    (1) Moderate: Several steps to recover equilibrium.
+    (0) Severe: Falls, or cannot step.
+    
+    Note: Test both left and right, use the side with the lowest score.
+    """
+    duration = _duration(signals)
+    sway = _sway_metrics(signals.cop_x, signals.cop_y)
+    step_count, first_step_time, step_sizes = _detect_steps_with_size(signals, "LATERAL")
+    
+    # Calculate stabilization time
+    dt = max(signals.dt, 1e-4)
+    dx = np.diff(signals.cop_x)
+    dy = np.diff(signals.cop_y)
+    speed = np.sqrt(dx * dx + dy * dy) / dt
+    window = max(int(round(0.5 / dt)), 1)
+    
+    if len(speed) >= window:
+        kernel = np.ones(window) / window
+        speed_smoothed = np.convolve(speed, kernel, mode="same")
+        speed_thresh = 0.5
+        stable_idx = np.where(speed_smoothed < speed_thresh)[0]
+        stabilization_time = float(signals.time_s[stable_idx[0]]) if stable_idx.size > 0 else duration
+    else:
+        stabilization_time = duration
+    
+    # Check for fall (large CoP displacement or loss of contact)
+    fall_detected = False
+    if len(signals.force) > 0:
+        # Check if force drops significantly (possible fall)
+        max_force = np.max(signals.force)
+        min_force = np.min(signals.force)
+        if max_force > 0 and min_force / max_force < 0.3:
+            # Significant force drop might indicate fall
+            fall_detected = True
+    
+    # Scoring: (2) 1 step, (1) Several steps, (0) Falls/cannot step
+    if fall_detected or step_count == 0:
+        score = 0
+    elif step_count == 1:
+        score = 2  # 1 step
+    else:
+        score = 1  # Several steps
+    
+    features = {
+        "Duration (s)": duration,
+        "Stabilization Time (s)": stabilization_time,
+        "Reaction Time (s)": first_step_time if not np.isnan(first_step_time) else 0.0,
+        "Number of Steps": float(step_count),
+        "Step Sizes (sensor units)": step_sizes,
+        "Largest Step Size": float(max(step_sizes)) if step_sizes else 0.0,
+        "Fall Detected": bool(fall_detected),
+        "CoP Path Length": sway.get("cop_path_length", float("nan")),
+        "CoP RMS": sway.get("cop_rms", float("nan")),
+        "Side": side.upper(),
+    }
+    
+    return ExerciseResult(participant, "Compensatory stepping correction - Lateral", side.upper(), "", score, features)
+
+
+# Keep old function for backward compatibility
+def process_compensatory_stepping(signals: BasicMatSignals, direction: str, participant: str) -> ExerciseResult:
+    """Legacy function - routes to specific functions based on direction."""
+    if direction.upper() == "FORWARD":
+        return process_compensatory_stepping_forward(signals, participant)
+    elif direction.upper() == "BACKWARD":
+        return process_compensatory_stepping_backward(signals, participant)
+    elif direction.upper() in ["LATERAL", "LEFT", "RIGHT"]:
+        return process_compensatory_stepping_lateral(signals, participant, direction.upper())
+    else:
+        # Default to forward
+        return process_compensatory_stepping_forward(signals, participant)
 
 def process_rise_to_toes(signals: BasicMatSignals, participant: str) -> ExerciseResult:
     duration = _duration(signals)
@@ -812,6 +1226,172 @@ def process_walk_head_turns_horizontal(csv_path: str, participant: str) -> Exerc
     return ExerciseResult(participant, "Walk with Head Turns - Horizontal", None, csv_path, score, features)
 
 
+def _detect_pivot_turn_period(signals, structured_steps):
+    """
+    Detect the pivot turn period by analyzing CoP movement patterns.
+    Returns the start and end times of the pivot turn period, and the number of steps during the turn.
+    
+    A pivot turn typically shows:
+    1. Initial forward walking (CoP X increasing)
+    2. Turn initiation (CoP X direction change or reversal)
+    3. Rotation period (180-degree turn)
+    4. Stop after rotation
+    
+    Returns:
+        tuple: (pivot_steps_count, turn_start_time, turn_end_time, turn_duration)
+    """
+    if not signals.frames or len(signals.frames) == 0:
+        return 0, None, None, 0.0
+    
+    # Calculate CoP X from all frames
+    cop_x_all = []
+    frame_times = []
+    frame_sums = [np.sum(frame) for frame in signals.frames]
+    max_pressure = max(frame_sums) if frame_sums else 0
+    pressure_threshold = max(10.0, max_pressure * 0.05)
+    
+    for i, frame in enumerate(signals.frames):
+        if np.sum(frame) > pressure_threshold:
+            rows, cols = frame.shape  # rows=48 (width), cols=288 (length)
+            col_indices = np.arange(cols).reshape(1, cols)
+            
+            total_force = np.sum(frame)
+            if total_force > 0:
+                cop_x = np.sum(frame * col_indices) / total_force
+                cop_x_all.append(cop_x)
+                frame_times.append(signals.time_s[i])
+    
+    if len(cop_x_all) < 10:  # Need enough data points
+        return 0, None, None, 0.0
+    
+    cop_x_arr = np.array(cop_x_all)
+    frame_times_arr = np.array(frame_times)
+    
+    # Detect CoP X direction reversal (forward to backward or vice versa)
+    # During a pivot turn, the CoP X should reverse direction
+    if len(cop_x_arr) > 1:
+        cop_x_velocity = np.diff(cop_x_arr)
+        
+        # Smooth the velocity to reduce noise
+        dt = signals.dt if hasattr(signals, 'dt') else (frame_times_arr[-1] - frame_times_arr[0]) / len(frame_times_arr) if len(frame_times_arr) > 1 else 0.01
+        window_size = max(3, int(0.2 / max(dt, 0.01)))  # 0.2 second window
+        if window_size % 2 == 0:
+            window_size += 1
+        if len(cop_x_velocity) >= window_size:
+            cop_x_velocity_smooth = uniform_filter1d(cop_x_velocity, size=window_size, mode='nearest')
+        else:
+            cop_x_velocity_smooth = cop_x_velocity
+        
+        # Find where velocity changes sign significantly (direction reversal)
+        velocity_threshold = np.std(cop_x_velocity_smooth) * 0.5 if len(cop_x_velocity_smooth) > 1 else 1.0
+        
+        # Find the maximum forward position (likely before turn starts)
+        max_forward_idx = np.argmax(cop_x_arr)
+        
+        # Find where velocity becomes negative after max forward (turn starts)
+        turn_start_idx = None
+        for i in range(max_forward_idx, len(cop_x_velocity_smooth)):
+            if cop_x_velocity_smooth[i] < -velocity_threshold:
+                turn_start_idx = i
+                break
+        
+        if turn_start_idx is None:
+            # Fallback: use middle of the sequence as turn start
+            turn_start_idx = len(cop_x_arr) // 3
+        
+        # Find where movement stabilizes (turn ends)
+        # Look for where velocity becomes small and stays small
+        turn_end_idx = len(cop_x_arr) - 1
+        for i in range(turn_start_idx + 5, len(cop_x_velocity_smooth)):
+            # Check if velocity is small for a sustained period
+            if i + 10 < len(cop_x_velocity_smooth):
+                window_velocity = cop_x_velocity_smooth[i:i+10]
+                if np.abs(window_velocity).mean() < velocity_threshold * 0.3:
+                    turn_end_idx = min(i + 5, len(cop_x_arr) - 1)  # End of stabilization period
+                    break
+    else:
+        # Fallback: use middle portion as turn period
+        turn_start_idx = len(cop_x_arr) // 4
+        turn_end_idx = 3 * len(cop_x_arr) // 4
+    
+    # Convert frame indices to times (in seconds from start)
+    if turn_start_idx < len(frame_times_arr) and turn_end_idx < len(frame_times_arr):
+        turn_start_time = frame_times_arr[turn_start_idx]
+        turn_end_time = frame_times_arr[turn_end_idx]
+        turn_duration = turn_end_time - turn_start_time
+    else:
+        turn_start_time = frame_times_arr[0] if len(frame_times_arr) > 0 else 0.0
+        turn_end_time = frame_times_arr[-1] if len(frame_times_arr) > 0 else 0.0
+        turn_duration = turn_end_time - turn_start_time
+    
+    # Count steps during the pivot turn period
+    pivot_steps_count = 0
+    if structured_steps and turn_start_time is not None and turn_end_time is not None:
+        import pandas as pd
+        base_time = signals.time_s[0] if len(signals.time_s) > 0 else 0.0
+        
+        for step in structured_steps:
+            step_start = step.get('start_time')
+            step_end = step.get('end_time')
+            
+            if step_start is not None and step_end is not None:
+                # Convert step times to seconds from base
+                try:
+                    # Get base timepoint from first frame if available
+                    base_timepoint = None
+                    if hasattr(signals, 'df') and signals.df is not None and len(signals.df) > 0:
+                        if 'timepoint' in signals.df.columns:
+                            base_timepoint = pd.to_datetime(signals.df.iloc[0]['timepoint'])
+                    elif len(frame_times_arr) > 0:
+                        # Use first frame time as base
+                        base_timepoint = pd.Timestamp.fromtimestamp(base_time) if base_time > 0 else None
+                    
+                    if isinstance(step_start, pd.Timestamp):
+                        if base_timepoint is not None:
+                            step_start_sec = (step_start - base_timepoint).total_seconds()
+                        else:
+                            # Fallback: use relative time from step's own timepoint
+                            step_start_sec = 0.0
+                    else:
+                        step_start_sec = float(step_start)
+                    
+                    if isinstance(step_end, pd.Timestamp):
+                        if base_timepoint is not None:
+                            step_end_sec = (step_end - base_timepoint).total_seconds()
+                        else:
+                            step_end_sec = 0.0
+                    else:
+                        step_end_sec = float(step_end)
+                    
+                    # Check overlap: step overlaps if it starts before turn ends and ends after turn starts
+                    if step_start_sec <= turn_end_time and step_end_sec >= turn_start_time:
+                        pivot_steps_count += 1
+                except Exception:
+                    # If conversion fails, try simpler approach: check if step has frames in turn period
+                    step_frames = step.get('frames', [])
+                    if step_frames:
+                        # Check if any frame time falls within turn period
+                        for frame_data in step_frames:
+                            frame_timepoint = frame_data.get('timepoint')
+                            if frame_timepoint is not None:
+                                try:
+                                    if isinstance(frame_timepoint, pd.Timestamp):
+                                        if base_timepoint is not None:
+                                            frame_sec = (frame_timepoint - base_timepoint).total_seconds()
+                                        else:
+                                            continue
+                                    else:
+                                        frame_sec = float(frame_timepoint)
+                                    
+                                    if turn_start_time <= frame_sec <= turn_end_time:
+                                        pivot_steps_count += 1
+                                        break  # Count step once
+                                except:
+                                    continue
+    
+    return pivot_steps_count, turn_start_time, turn_end_time, turn_duration
+
+
 def process_walk_pivot_turns(csv_path: str, participant: str) -> ExerciseResult:
     """
     MiniBEST Exercise 12: Walk with Pivot Turns
@@ -830,33 +1410,167 @@ def process_walk_pivot_turns(csv_path: str, participant: str) -> ExerciseResult:
         return ExerciseResult(participant, "Walk with Pivot Turns", None, csv_path, 0, {})
     
     metrics = fga._calculate_common_metrics(signals, structured_steps)
-    number_of_steps = metrics["number_of_steps"]
-    turn_time = metrics["actual_walking_time"]
     has_imbalance = metrics["max_deviation_cm"] > 25.4
     
-    # Estimate steps for turn (assuming turn is part of the exercise)
-    # If turn_time < 3s and steps < 4, it's fast
-    fast_turn = turn_time < 3.0 and number_of_steps < 4
-    slow_turn = turn_time >= 3.0 and number_of_steps >= 4
+    # Detect pivot turn period and count steps ONLY during the turn
+    pivot_steps_count, turn_start_time, turn_end_time, turn_duration = _detect_pivot_turn_period(signals, structured_steps)
     
-    # MiniBEST scoring
-    if fast_turn and not has_imbalance:
-        score = 2
-    elif slow_turn and not has_imbalance:
-        score = 1
-    else:
+    # Fallback: if detection failed, use middle portion of steps as pivot turn
+    if pivot_steps_count == 0 and structured_steps and len(structured_steps) > 0:
+        # Use middle 60% of steps as pivot turn period
+        sorted_steps = sorted(structured_steps, key=lambda s: s.get('start_time', pd.Timestamp.min))
+        start_idx = len(sorted_steps) // 5  # Start at 20%
+        end_idx = 4 * len(sorted_steps) // 5  # End at 80%
+        pivot_steps_count = end_idx - start_idx
+        if pivot_steps_count == 0:
+            pivot_steps_count = len(sorted_steps)  # If still 0, use all steps
+    
+    # Scoring based on pivot turn steps ONLY
+    # (2) Normal: < 3 steps during pivot turn
+    # (1) Moderate: >4 steps during pivot turn
+    # (0) Severe: Cannot turn without imbalance
+    
+    if has_imbalance:
         score = 0
+    elif pivot_steps_count < 3:
+        score = 2  # Fast turn (< 3 steps)
+    elif pivot_steps_count >= 4:
+        score = 1  # Slow turn (>= 4 steps)
+    else:
+        # Edge case: exactly 3 steps - could be fast or slow depending on time
+        # If turn is fast (< 3s), treat as fast; otherwise slow
+        if turn_duration < 3.0:
+            score = 2
+        else:
+            score = 1
     
     features = {
-        "turn_time_s": float(turn_time),
-        "number_of_steps": int(number_of_steps),
+        "pivot_turn_steps": int(pivot_steps_count),  # Steps ONLY during pivot turn
+        "total_steps": int(metrics["number_of_steps"]),  # Total steps in entire exercise
+        "turn_duration_s": float(turn_duration),
         "total_exercise_time_s": float(metrics["total_time"]),
         "max_deviation_cm": float(metrics["max_deviation_cm"]),
         "has_imbalance": bool(has_imbalance),
-        "fast_turn": bool(fast_turn),
+        "turn_start_time_s": float(turn_start_time) if turn_start_time is not None else None,
+        "turn_end_time_s": float(turn_end_time) if turn_end_time is not None else None,
     }
     
     return ExerciseResult(participant, "Walk with Pivot Turns", None, csv_path, score, features)
+
+
+def _filter_static_obstacle_steps(structured_steps, signals):
+    """
+    Filter out steps that are actually the static obstacle in the middle of the treadmill.
+    The obstacle is static (doesn't move) and appears at approximately the middle position.
+    
+    Args:
+        structured_steps: List of structured steps
+        signals: FGASignals object
+    
+    Returns:
+        Filtered list of steps (obstacle steps removed)
+    """
+    if not structured_steps or len(structured_steps) == 0:
+        return structured_steps
+    
+    # The obstacle is typically in the middle of the treadmill
+    # 6 mats = 288 columns total, middle is around columns 96-192 (mats 2-4)
+    total_cols = 288  # 6 mats * 48 columns each
+    obstacle_col_start = total_cols // 3  # ~96 (start of mat 2)
+    obstacle_col_end = 2 * total_cols // 3  # ~192 (end of mat 4)
+    
+    # Calculate total exercise time
+    total_time = signals.time_s[-1] - signals.time_s[0] if len(signals.time_s) > 1 else 1.0
+    
+    filtered_steps = []
+    
+    for step in structured_steps:
+        # Get the overbox (bounding box) for this step
+        overbox = step.get('metadata', {}).get('overbox')
+        if not overbox:
+            # If no overbox, calculate it from frames
+            frames = step.get('frames', [])
+            if not frames:
+                continue
+            min_col = min(frame.get('bbox', [0, 0, 0, 0])[1] for frame in frames)
+            max_col = max(frame.get('bbox', [0, 0, 0, 0])[3] for frame in frames)
+        else:
+            min_row, min_col, max_row, max_col = overbox
+        
+        # Calculate step duration
+        step_duration = 0
+        if step.get('start_time') and step.get('end_time'):
+            try:
+                import pandas as pd
+                if isinstance(step['start_time'], pd.Timestamp) and isinstance(step['end_time'], pd.Timestamp):
+                    step_duration = (step['end_time'] - step['start_time']).total_seconds()
+                else:
+                    step_duration = float(step['end_time']) - float(step['start_time'])
+            except:
+                step_duration = len(step.get('frames', [])) * 0.1  # Estimate
+        
+        # Check if step is in obstacle region (middle of treadmill)
+        step_center_col = (min_col + max_col) / 2
+        is_in_obstacle_region = (obstacle_col_start <= step_center_col <= obstacle_col_end)
+        
+        # Calculate movement of the step (how much the center moves)
+        frames = step.get('frames', [])
+        movement = 0
+        if len(frames) >= 3:
+            centers = []
+            for frame in frames:
+                bbox = frame.get('bbox')
+                if bbox:
+                    min_row_f, min_col_f, max_row_f, max_col_f = bbox
+                    center_col = (min_col_f + max_col_f) / 2
+                    centers.append(center_col)
+            
+            if len(centers) > 1:
+                movement = max(centers) - min(centers)
+        
+        # Identify obstacle steps
+        # The obstacle is: in middle region, static (< 12 columns movement), and long duration
+        is_static = movement < 12  # Very little movement (increased threshold to catch more)
+        is_long_duration = step_duration > total_time * 0.2  # Present for >20% of exercise (lowered threshold)
+        
+        # Count how many frames of this step are in the obstacle region
+        frames_in_obstacle = 0
+        total_frames = len(frames)
+        if total_frames > 0:
+            for frame in frames:
+                bbox = frame.get('bbox')
+                if bbox:
+                    min_row_f, min_col_f, max_row_f, max_col_f = bbox
+                    frame_center_col = (min_col_f + max_col_f) / 2
+                    if obstacle_col_start <= frame_center_col <= obstacle_col_end:
+                        frames_in_obstacle += 1
+            
+            # If >60% of frames are in obstacle region, it's likely the obstacle
+            obstacle_ratio = frames_in_obstacle / total_frames if total_frames > 0 else 0
+        else:
+            obstacle_ratio = 0
+        
+        # Filter out obstacle steps - be very aggressive
+        # The obstacle appears as multiple steps in the middle region
+        # Remove ALL steps that meet ANY of these criteria:
+        # 1. In obstacle region AND static (< 12 columns movement) - regardless of duration
+        # 2. In obstacle region AND long duration (>15% of exercise) - regardless of movement
+        # 3. Primarily in obstacle region (>30% of frames) - regardless of other criteria
+        # 4. In obstacle region AND moderate duration (>10% of exercise) AND static
+        is_mostly_in_obstacle = obstacle_ratio > 0.3  # Lowered to catch more
+        is_long_enough = step_duration > total_time * 0.15  # Lowered to catch more
+        is_moderate_duration = step_duration > total_time * 0.1  # Lowered to catch more
+        
+        # Remove if step is in obstacle region AND meets any obstacle criteria
+        # This should catch all obstacle-related steps, including those that are split into multiple detections
+        if is_in_obstacle_region and (is_static or is_long_enough or is_mostly_in_obstacle or (is_moderate_duration and is_static)):
+            # This is likely the obstacle - skip it
+            continue
+        
+        # Include all other steps (real walking steps)
+        filtered_steps.append(step)
+    
+    return filtered_steps
 
 
 def process_step_over_obstacles(csv_path: str, participant: str) -> ExerciseResult:
@@ -873,39 +1587,162 @@ def process_step_over_obstacles(csv_path: str, participant: str) -> ExerciseResu
     structured_steps = signals.structured_steps
     gait_cycles = signals.gait_cycles
     
-    if not gait_cycles or len(gait_cycles) == 0:
+    if not structured_steps or len(structured_steps) == 0:
         return ExerciseResult(participant, "Step Over Obstacles", None, csv_path, 0, {})
     
-    metrics = fga._calculate_common_metrics(signals, structured_steps)
+    # Filter out the static obstacle from steps
+    filtered_steps = _filter_static_obstacle_steps(structured_steps, signals)
+    
+    if len(filtered_steps) == 0:
+        return ExerciseResult(participant, "Step Over Obstacles", None, csv_path, 0, {
+            "error": "No valid steps detected after filtering obstacle"
+        })
+    
+    # Recalculate metrics using filtered steps (without obstacle)
+    metrics = fga._calculate_common_metrics(signals, filtered_steps)
+    
+    # Filter gait cycles to only include those corresponding to filtered steps
+    filtered_gait_cycles = []
+    if gait_cycles:
+        # Get step heel strikes from filtered steps for matching
+        filtered_heel_strikes = set()
+        for step in filtered_steps:
+            heel_strike = step.get('metadata', {}).get('heel_strike')
+            if heel_strike:
+                filtered_heel_strikes.add(heel_strike)
+        
+        for cycle in gait_cycles:
+            # Check if cycle's heel strikes match filtered steps
+            right_heel = cycle.get('right_leg', {}).get('heel_strike')
+            left_heel = cycle.get('left_leg', {}).get('heel_strike')
+            
+            # Include cycle if both heel strikes are in filtered steps
+            if right_heel in filtered_heel_strikes and left_heel in filtered_heel_strikes:
+                filtered_gait_cycles.append(cycle)
     
     # Analyze cadence variation (obstacle may cause speed changes)
     cadences = []
-    for cycle in gait_cycles:
+    for cycle in filtered_gait_cycles if filtered_gait_cycles else gait_cycles:
         if 'cadence' in cycle and cycle['cadence'] is not None:
             cadences.append(cycle['cadence'])
     
+    # Calculate cadence before and after obstacle region
+    # Obstacle is in middle, so split cadences into before/after
+    if len(cadences) >= 4:
+        mid_point = len(cadences) // 2
+        cadences_before = cadences[:mid_point]
+        cadences_after = cadences[mid_point:]
+        
+        avg_cadence_before = np.mean(cadences_before) if cadences_before else 0
+        avg_cadence_after = np.mean(cadences_after) if cadences_after else 0
+        
+        if avg_cadence_before > 0:
+            cadence_change_percent = abs(avg_cadence_after - avg_cadence_before) / avg_cadence_before * 100
+        else:
+            cadence_change_percent = 0
+    else:
+        cadence_change_percent = 0
+        avg_cadence_before = np.mean(cadences) if cadences else 0
+        avg_cadence_after = avg_cadence_before
+    
     cadence_variation = np.std(cadences) if len(cadences) > 1 else 0
-    speed_maintained = cadence_variation < 10  # Low variation = speed maintained
+    
+    # Minimal change in gait speed: cadence change < 15% (regardless of variation)
+    # This means the patient maintained their speed when stepping over the obstacle
+    minimal_speed_change = cadence_change_percent < 15
+    # Slowing gait: cadence decreases significantly (> 15%) indicating cautious behavior
+    slowing_gait = cadence_change_percent > 15
+    
     has_imbalance = metrics["max_deviation_cm"] > 25.4
     
+    # Check if patient stepped around obstacle (lateral deviation increases significantly near obstacle)
+    # This would show as increased deviation in the middle region
+    cop_y_positions = []
+    if len(signals.frames) > 0:
+        frame_sums = [np.sum(frame) for frame in signals.frames]
+        max_pressure = max(frame_sums) if frame_sums else 0
+        pressure_threshold = max(10.0, max_pressure * 0.05)
+        
+        for i, frame in enumerate(signals.frames):
+            if np.sum(frame) > pressure_threshold:
+                rows, cols = frame.shape
+                row_indices = np.arange(rows).reshape(rows, 1)
+                total_force = np.sum(frame)
+                if total_force > 0:
+                    cop_y = np.sum(frame * row_indices) / total_force
+                    cop_y_positions.append((signals.time_s[i], cop_y))
+    
+    stepped_around = False
+    if len(cop_y_positions) >= 10:
+        times, cop_ys = zip(*cop_y_positions)
+        times = np.array(times)
+        cop_ys = np.array(cop_ys)
+        
+        # Find middle time period (where obstacle is)
+        mid_time = (times[-1] + times[0]) / 2
+        mid_start = mid_time - 1.0  # 1 second before middle
+        mid_end = mid_time + 1.0    # 1 second after middle
+        
+        mid_mask = (times >= mid_start) & (times <= mid_end)
+        if np.any(mid_mask):
+            mid_deviation = np.std(cop_ys[mid_mask])
+            overall_deviation = np.std(cop_ys)
+            # If deviation in middle is significantly higher, they might have stepped around
+            if mid_deviation > overall_deviation * 1.5 and mid_deviation > 10:
+                stepped_around = True
+    
     # MiniBEST scoring
-    if speed_maintained and not has_imbalance:
+    # Score 2: Minimal change in gait speed (< 15% change) AND good balance
+    # Score 1: Slowing gait (> 15% decrease) OR imbalance (touching box or cautious behavior)
+    # Score 0: Stepped around obstacle OR unable to step over
+    
+    if stepped_around or len(filtered_steps) < 3:
+        # Unable to step over or steps around
+        score = 0
+    elif minimal_speed_change and not has_imbalance:
+        # Minimal change in gait speed (< 15%) and good balance
+        # Example: cadence 92 -> 89 is only 3.3% change, which is minimal
         score = 2
-    elif not speed_maintained or has_imbalance:
-        score = 1  # Could be touching box or slowing down
+    elif has_imbalance:
+        # Imbalance indicates touching box or cautious behavior
+        score = 1
+    elif slowing_gait:
+        # Significant slowing (> 15% decrease) indicates cautious behavior
+        score = 1
     else:
-        score = 0  # Unable to step over
+        # Default case: if cadence change is minimal (< 15%), treat as score 2
+        # This handles edge cases where minimal_speed_change might not be set correctly
+        if cadence_change_percent < 15 and not has_imbalance:
+            score = 2
+        else:
+            score = 1
     
     features = {
         "actual_walking_time_s": float(metrics["actual_walking_time"]),
         "total_exercise_time_s": float(metrics["total_time"]),
-        "number_of_steps": int(metrics["number_of_steps"]),
+        "number_of_steps": int(len(filtered_steps)),  # Real steps (obstacle filtered out)
         "average_cadence_steps_per_min": float(metrics["average_cadence"]),
         "cadence_variation_steps_per_min": float(cadence_variation),
-        "speed_maintained": bool(speed_maintained),
+        "cadence_change_percent": float(cadence_change_percent),
+        "avg_cadence_before_obstacle": float(avg_cadence_before),
+        "avg_cadence_after_obstacle": float(avg_cadence_after),
+        "minimal_speed_change": bool(minimal_speed_change),
+        "slowing_gait": bool(slowing_gait),
+        "stepped_around": bool(stepped_around),
         "max_deviation_cm": float(metrics["max_deviation_cm"]),
         "has_imbalance": bool(has_imbalance),
     }
+    
+    # Update signals with filtered data for plotting (only update steps, keep original cycles for now)
+    signals.structured_steps = filtered_steps
+    # Keep original gait cycles but filter out obstacle-related ones for plotting
+    if filtered_gait_cycles:
+        signals.gait_cycles = filtered_gait_cycles
+    else:
+        signals.gait_cycles = gait_cycles
+    
+    # Add flag to indicate signals have been filtered
+    features["_use_filtered_steps"] = True
     
     return ExerciseResult(participant, "Step Over Obstacles", None, csv_path, score, features)
 

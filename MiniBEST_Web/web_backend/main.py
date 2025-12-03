@@ -148,7 +148,14 @@ async def analyze_minibest(
                 result = minibest.process_stance_eyes_open(signals, patient.patient_identifier)
             elif exercise_type == "stance_eyes_closed":
                 result = minibest.process_stance_eyes_closed(signals, patient.patient_identifier)
+            elif exercise_type == "compensatory_stepping_forward":
+                result = minibest.process_compensatory_stepping_forward(signals, patient.patient_identifier)
+            elif exercise_type == "compensatory_stepping_backward":
+                result = minibest.process_compensatory_stepping_backward(signals, patient.patient_identifier)
+            elif exercise_type == "compensatory_stepping_lateral":
+                result = minibest.process_compensatory_stepping_lateral(signals, patient.patient_identifier, variant or "LEFT")
             elif exercise_type == "compensatory_stepping":
+                # Legacy support
                 result = minibest.process_compensatory_stepping(signals, variant or "FORWARD", patient.patient_identifier)
             elif exercise_type == "stand_one_leg":
                 result = minibest.process_stand_on_one_leg(signals, patient.patient_identifier, variant or "Left")
@@ -168,6 +175,28 @@ async def analyze_minibest(
             
             # Load FGA signals for plotting
             fga_signals = fga.load_fga_signals(file_path)
+            
+            # For step_over_obstacles, filter out obstacle steps before plotting
+            if exercise_type == "step_over_obstacles" and sanitized_features.get("_use_filtered_steps", False):
+                # Import and use the filtering function to remove obstacle steps
+                from web_backend.analysis.minibest import _filter_static_obstacle_steps
+                # Filter steps to remove obstacle
+                filtered_steps = _filter_static_obstacle_steps(fga_signals.structured_steps, fga_signals)
+                # Update signals with filtered steps for plotting
+                fga_signals.structured_steps = filtered_steps
+                # Also filter gait cycles
+                filtered_gait_cycles = []
+                if fga_signals.gait_cycles:
+                    filtered_step_ids = {step.get('step_id') for step in filtered_steps}
+                    for cycle in fga_signals.gait_cycles:
+                        cycle_steps = cycle.get('steps', [])
+                        if cycle_steps:
+                            cycle_step_ids = {step.get('step_id') if isinstance(step, dict) else step for step in cycle_steps}
+                            if cycle_step_ids & filtered_step_ids:
+                                filtered_gait_cycles.append(cycle)
+                fga_signals.gait_cycles = filtered_gait_cycles if filtered_gait_cycles else fga_signals.gait_cycles
+                # Remove flag from features
+                del sanitized_features["_use_filtered_steps"]
             
             # Generate FGA plots
             plot_data = generate_fga_plot_components(exercise_type, fga_signals, sanitized_features)

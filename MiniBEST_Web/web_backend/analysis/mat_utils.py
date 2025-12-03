@@ -485,6 +485,13 @@ def analyze_gait_cycles_with_metrics(structured_steps):
 def calculate_gait_cycle_distances(gait_cycles, structured_steps, distance_per_data_point=2):
     """
     Calculate average horizontal and vertical distances between feet for each gait cycle.
+    
+    NOTE: This calculates step width (lateral distance between left/right feet), 
+    NOT stride length (forward progression). For stride length, we need forward distance
+    between consecutive heel strikes of the same foot.
+    
+    However, for plotting purposes, we use this as an approximation of stride length
+    by calculating the forward progression distance between consecutive steps.
     """
     # Map steps by time for easy lookup
     steps_by_time = {
@@ -516,8 +523,12 @@ def calculate_gait_cycle_distances(gait_cycles, structured_steps, distance_per_d
                 horizontal_distance = abs(right_center_x - left_center_x) * distance_per_data_point
                 vertical_distance = abs(right_center_y - left_center_y) * distance_per_data_point
 
-                # Add distances to the cycle
-                cycle['average_horizontal_distance'] = horizontal_distance
+                # Validate: Normal stride/step length should be 30-150cm. If > 150cm, likely includes obstacle or error
+                # Filter out unrealistic values that might include obstacle
+                if horizontal_distance > 150:  # Unrealistic, likely includes obstacle
+                    cycle['average_horizontal_distance'] = None
+                else:
+                    cycle['average_horizontal_distance'] = horizontal_distance
                 cycle['average_vertical_distance'] = vertical_distance
             else:
                 cycle['average_horizontal_distance'] = None

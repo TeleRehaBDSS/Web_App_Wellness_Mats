@@ -93,17 +93,19 @@ def render_minibest(patient):
     st.header(f"MiniBESTest - Patient: {patient['patient_identifier']}")
     
     exercises = {
-        "sit_to_stand": "Sit to Stand",
-        "rise_to_toes": "Rise to Toes",
-        "stance_eyes_open": "Stance (Eyes Open)",
-        "stance_eyes_closed": "Stance (Eyes Closed)",
-        "compensatory_stepping": "Compensatory Stepping",
-        "stand_one_leg": "Stand on One Leg",
-        "change_gait_speed": "Change in Gait Speed",
-        "walk_head_turns_horizontal": "Walk with Head Turns - Horizontal",
-        "walk_pivot_turns": "Walk with Pivot Turns",
-        "step_over_obstacles": "Step Over Obstacles",
-        "tug_dual_task": "Timed Up & Go with Dual Task"
+        "sit_to_stand": "1. Sit to Stand",
+        "rise_to_toes": "2. Rise to Toes",
+        "stance_eyes_open": "3. Stance (Eyes Open)",
+        "compensatory_stepping_forward": "4. Compensatory Stepping - Forward",
+        "compensatory_stepping_backward": "5. Compensatory Stepping - Backward",
+        "compensatory_stepping_lateral": "6. Compensatory Stepping - Lateral",
+        "stance_eyes_closed": "7. Stance (Eyes Closed)",
+        "stand_one_leg": "8. Stand on One Leg",
+        "change_gait_speed": "10. Change in Gait Speed",
+        "walk_head_turns_horizontal": "11. Walk with Head Turns - Horizontal",
+        "walk_pivot_turns": "12. Walk with Pivot Turns",
+        "step_over_obstacles": "13. Step Over Obstacles",
+        "tug_dual_task": "14. Timed Up & Go with Dual Task"
     }
     
     # Use selectbox for exercise selection (scrollable)
@@ -129,8 +131,8 @@ def render_minibest(patient):
     if key == "sit_to_stand":
         used_hands = col1.checkbox("Used Hands?", key=f"uh_{key}")
         multiple_attempts = col2.checkbox("Multiple Attempts?", key=f"ma_{key}")
-    elif key == "compensatory_stepping":
-        variant = col1.selectbox("Direction", ["FORWARD", "BACKWARD", "LATERAL_LEFT", "LATERAL_RIGHT"], key=f"var_{key}")
+    elif key == "compensatory_stepping_lateral":
+        variant = col1.selectbox("Side", ["LEFT", "RIGHT"], key=f"var_{key}")
     elif key == "stand_one_leg":
         variant = col1.selectbox("Leg", ["Left", "Right"], key=f"var_{key}")
     elif key == "tug_dual_task":
@@ -149,8 +151,29 @@ def render_minibest(patient):
             "variant": variant
         }
         
-        with st.spinner("Analyzing..."):
-            res = requests.post(f"{API_URL}/analyze/minibest", files=files, data=data, headers=get_headers())
+        # Create a more relevant loading indicator for medical analysis
+        loading_placeholder = st.empty()
+        with loading_placeholder.container():
+            st.markdown("""
+            <div style="text-align: center; padding: 20px; background-color: #1e1e1e; border-radius: 10px; border: 1px solid #444;">
+                <h3 style="color: #4CAF50;">📊 Processing Movement Analysis</h3>
+                <p style="color: #ccc;">Analyzing balance patterns and calculating metrics...</p>
+                <div style="display: flex; justify-content: center; gap: 10px; margin-top: 20px;">
+                    <div style="width: 12px; height: 12px; background: #4CAF50; border-radius: 50%; animation: pulse 1.5s ease-in-out infinite;"></div>
+                    <div style="width: 12px; height: 12px; background: #4CAF50; border-radius: 50%; animation: pulse 1.5s ease-in-out infinite; animation-delay: 0.2s;"></div>
+                    <div style="width: 12px; height: 12px; background: #4CAF50; border-radius: 50%; animation: pulse 1.5s ease-in-out infinite; animation-delay: 0.4s;"></div>
+                </div>
+            </div>
+            <style>
+                @keyframes pulse {
+                    0%, 100% { opacity: 0.3; transform: scale(0.8); }
+                    50% { opacity: 1; transform: scale(1.2); }
+                }
+            </style>
+            """, unsafe_allow_html=True)
+        
+        res = requests.post(f"{API_URL}/analyze/minibest", files=files, data=data, headers=get_headers())
+        loading_placeholder.empty()
                 
         if res.status_code == 200:
             result = res.json()
@@ -217,6 +240,38 @@ def render_minibest(patient):
                 with row2[1]:
                     if result.get("stability_plot"):
                         st.markdown("##### CoP Stability (Flat -> Toes)")
+                        st.image(base64.b64decode(result["stability_plot"]), use_container_width=True)
+            
+            elif key in ["compensatory_stepping_forward", "compensatory_stepping_backward", "compensatory_stepping_lateral"]:
+                # Compensatory stepping exercises
+                st.markdown("### Analysis Dashboard")
+                row1 = st.columns(2)
+                row2 = st.columns(2)
+                
+                # 1. Video (Top Left)
+                with row1[0]:
+                    if result.get("replay"):
+                        st.markdown("##### Video Replay")
+                        st.image(base64.b64decode(result["replay"]), width=400)
+                    else:
+                        st.info("Video not available")
+                        
+                # 2. CoP Trajectory (Top Right)
+                with row1[1]:
+                    if result.get("force_plot"):  # Reused for CoP trajectory
+                        st.markdown("##### CoP Trajectory Over Time")
+                        st.image(base64.b64decode(result["force_plot"]), use_container_width=True)
+                        
+                # 3. Stabilogram (Bottom Left)
+                with row2[0]:
+                    if result.get("ap_plot"):  # Reused for Stabilogram
+                        st.markdown("##### CoP Stabilogram (X vs Y)")
+                        st.image(base64.b64decode(result["ap_plot"]), use_container_width=True)
+                        
+                # 4. Step Analysis (Bottom Right)
+                with row2[1]:
+                    if result.get("stability_plot"):
+                        st.markdown("##### Step Analysis")
                         st.image(base64.b64decode(result["stability_plot"]), use_container_width=True)
             
             elif key in ["stance_eyes_open", "stance_eyes_closed", "stand_one_leg"]:
@@ -337,8 +392,29 @@ def render_fga(patient):
             "manual_input": manual_input
         }
         
-        with st.spinner("Analyzing..."):
-            res = requests.post(f"{API_URL}/analyze/fga", files=files, data=data, headers=get_headers())
+        # Create a more relevant loading indicator for gait analysis
+        loading_placeholder = st.empty()
+        with loading_placeholder.container():
+            st.markdown("""
+            <div style="text-align: center; padding: 20px; background-color: #1e1e1e; border-radius: 10px; border: 1px solid #444;">
+                <h3 style="color: #2196F3;">🚶 Analyzing Gait Patterns</h3>
+                <p style="color: #ccc;">Processing pressure mat data and calculating gait metrics...</p>
+                <div style="display: flex; justify-content: center; gap: 10px; margin-top: 20px;">
+                    <div style="width: 12px; height: 12px; background: #2196F3; border-radius: 50%; animation: pulse 1.5s ease-in-out infinite;"></div>
+                    <div style="width: 12px; height: 12px; background: #2196F3; border-radius: 50%; animation: pulse 1.5s ease-in-out infinite; animation-delay: 0.2s;"></div>
+                    <div style="width: 12px; height: 12px; background: #2196F3; border-radius: 50%; animation: pulse 1.5s ease-in-out infinite; animation-delay: 0.4s;"></div>
+                </div>
+            </div>
+            <style>
+                @keyframes pulse {
+                    0%, 100% { opacity: 0.3; transform: scale(0.8); }
+                    50% { opacity: 1; transform: scale(1.2); }
+                }
+            </style>
+            """, unsafe_allow_html=True)
+        
+        res = requests.post(f"{API_URL}/analyze/fga", files=files, data=data, headers=get_headers())
+        loading_placeholder.empty()
         
         if res.status_code == 200:
             result = res.json()
@@ -382,7 +458,25 @@ def render_fga(patient):
             st.error(f"Error: {res.text}")
 
 def main():
-    st.set_page_config(page_title="MiniBEST & FGA Dashboard", layout="wide")
+    st.set_page_config(
+        page_title="MiniBEST & FGA Dashboard", 
+        layout="wide",
+        menu_items={
+            'Get Help': None,
+            'Report a bug': None,
+            'About': "MiniBEST & FGA Analysis Dashboard - Balance Assessment Tool"
+        }
+    )
+    
+    # Hide the menu icon using CSS
+    st.markdown("""
+    <style>
+        #MainMenu {visibility: hidden;}
+        header {visibility: hidden;}
+        footer {visibility: hidden;}
+        .stDeployButton {display: none;}
+    </style>
+    """, unsafe_allow_html=True)
     
     if "token" not in st.session_state:
         login()
