@@ -468,13 +468,18 @@ def main():
         }
     )
     
-    # Hide the menu icon using CSS
+    # Hide only the menu icon (hamburger menu) in the top right, not the sidebar
     st.markdown("""
     <style>
-        #MainMenu {visibility: hidden;}
-        header {visibility: hidden;}
-        footer {visibility: hidden;}
+        /* Hide the hamburger menu button */
+        button[title="View app source"] {display: none;}
+        button[data-testid="baseButton-header"] {display: none;}
+        /* Hide the "Deploy" button */
         .stDeployButton {display: none;}
+        /* Hide footer */
+        footer {visibility: hidden;}
+        /* Keep sidebar visible - don't hide header completely */
+        [data-testid="stSidebar"] {visibility: visible !important;}
     </style>
     """, unsafe_allow_html=True)
     

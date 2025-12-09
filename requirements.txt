@@ -1,0 +1,18 @@
+# Main application dependencies
+dash
+flask
+pandas
+numpy
+plotly
+matplotlib
+scipy
+requests
+fastapi
+uvicorn[standard]
+sqlalchemy
+python-jose[cryptography]
+passlib[bcrypt]
+python-multipart
+streamlit
+opencv-python-headless
+Pillow
