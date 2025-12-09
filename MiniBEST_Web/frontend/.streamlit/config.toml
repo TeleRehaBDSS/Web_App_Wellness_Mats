@@ -1,0 +1,10 @@
+[ui]
+# Don't hide the top bar - we need the sidebar visible
+
+[theme]
+primaryColor = "#4CAF50"
+backgroundColor = "#0e1117"
+secondaryBackgroundColor = "#262730"
+textColor = "#FAFAFA"
+font = "sans serif"
+
