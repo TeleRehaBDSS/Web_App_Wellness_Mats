@@ -377,20 +377,26 @@ def render_fga(patient):
     manual_input = None
     if ex_num in [3, 4, 5, 6]:
         options = {
-            3: ["Smoothly", "Mild difficulty", "Moderate difficulty", "Severe difficulty or unable"],
-            4: ["Smoothly", "Mild difficulty", "Moderate difficulty", "Severe difficulty or unable"],
-            5: ["Smooth and balanced", "Mild imbalance", "Significant imbalance or hesitation", "Unable to perform"],
-            6: ["Smooth", "Slight hesitation", "Significant effort or imbalance", "Unable to perform"]
+            3: ["Auto (use sensors)", "Smoothly", "Mild difficulty", "Moderate difficulty", "Severe difficulty or unable"],
+            4: ["Auto (use sensors)", "Smoothly", "Mild difficulty", "Moderate difficulty", "Severe difficulty or unable"],
+            5: ["Auto (use sensors)", "Smooth and balanced", "Mild imbalance", "Significant imbalance or hesitation", "Unable to perform"],
+            6: ["Auto (use sensors)", "Smooth", "Slight hesitation", "Significant effort or imbalance", "Unable to perform"]
         }
-        manual_input = st.selectbox("Manual Rating (Clinical Observation)", options[ex_num], key=f"man_{ex_num}")
+        selected_manual = st.selectbox(
+            "Manual Rating (Clinical Observation)",
+            options[ex_num],
+            key=f"man_{ex_num}"
+        )
+        manual_input = None if selected_manual == "Auto (use sensors)" else selected_manual
 
     if uploaded_file and st.button(f"Analyze {label}", key=f"fga_btn_{ex_num}"):
         files = {"file": uploaded_file}
         data = {
             "exercise_num": ex_num,
-            "patient_id": patient["id"],
-            "manual_input": manual_input
+            "patient_id": patient["id"]
         }
+        if manual_input is not None:
+            data["manual_input"] = manual_input
         
         # Create a more relevant loading indicator for gait analysis
         loading_placeholder = st.empty()
